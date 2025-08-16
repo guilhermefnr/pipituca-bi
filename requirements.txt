@@ -1,0 +1,17 @@
+# ---- Core data stack
+pandas==2.3.1
+numpy==2.3.2
+
+# ---- Firebird database driver (usado pelos scripts de conexão/leitura)
+firebirdsql==1.4.0
+
+# ---- Variáveis de ambiente (.env em config.py)
+python-dotenv==1.1.1
+
+# ---- Escrita de Excel (pandas.to_excel engine) — usado em etapas anteriores e util se precisar
+openpyxl>=3.1.2
+
+# ---- Utilitários de data/hora (pandas depende; explicitamos para CI)
+python-dateutil>=2.9.0.post0
+pytz>=2024.1
+tzdata>=2024.1 ; platform_system == "Windows"
