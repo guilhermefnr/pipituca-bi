@@ -78,9 +78,8 @@ def safe_div(num, den):
         return 0.0
 
 def excel_number_formats(ws, header_row_idx: int, df: pd.DataFrame, money_cols: list[str], int_cols: list[str]):
-    from openpyxl.utils import get_column_letter as _gcl
     for col_idx, col_name in enumerate(df.columns, start=1):
-        xl_col = _gcl(col_idx)
+        xl_col = get_column_letter(col_idx)
         if col_name in money_cols:
             for row in range(header_row_idx + 1, header_row_idx + 1 + len(df)):
                 ws[f"{xl_col}{row}"].number_format = "#,##0.00"
@@ -152,6 +151,7 @@ if __name__ == "__main__":
                 "QTDE_PRODUTOS": "Qtde. Produtos (B)",
                 "QTDE_PEDIDOS": "Qtde. Pedidos (C)",
                 "DESCONTO": "Desconto",
+                "ACRÉSCIMO": "Acréscimo",
                 "ACRESCIMO": "Acréscimo",
             }
         )
@@ -161,8 +161,13 @@ if __name__ == "__main__":
 
     # ---------- Resumo por dia da semana ----------
     ordem_semana = [
-        "Segunda-feira","Terça-feira","Quarta-feira",
-        "Quinta-feira","Sexta-feira","Sábado","Domingo",
+        "Segunda-feira",
+        "Terça-feira",
+        "Quarta-feira",
+        "Quinta-feira",
+        "Sexta-feira",
+        "Sábado",
+        "Domingo",
     ]
     detalhe["Dia da Semana"] = pd.Categorical(detalhe["Dia da Semana"], categories=ordem_semana, ordered=True)
 
@@ -189,6 +194,7 @@ if __name__ == "__main__":
     resumo["Tot. Bruto"] = resumo["Total Líquido (A)"] + resumo["Desconto"] - resumo["Acréscimo"]
 
     # ---------- Vendas Total do Período ----------
+    # Devoluções (TROCA_MERC) baseadas em VL_BRUTO (ajuste solicitado)
     SQL_devol = f"""
         SELECT
             SUM(CASE WHEN UPPER(TRIM(SITUACAO)) = 'TROCA_MERC'
@@ -209,9 +215,9 @@ if __name__ == "__main__":
     dev_cnt = int(exec_sql(SQL_devol_cnt).iloc[0]["DEV_QTD"])
 
     venda_bruta_total_bruto = float(detalhe["Tot. Bruto"].sum())
-    venda_bruta_total_liq   = float(detalhe["Total Líquido (A)"].sum())
-    venda_bruta_descontos   = float(detalhe["Desconto"].sum())
-    venda_bruta_acrescimos  = float(detalhe["Acréscimo"].sum())
+    venda_bruta_total_liq = float(detalhe["Total Líquido (A)"].sum())
+    venda_bruta_descontos = float(detalhe["Desconto"].sum())
+    venda_bruta_acrescimos = float(detalhe["Acréscimo"].sum())
 
     venda_bruta = {
         "Total Bruto": venda_bruta_total_bruto,
@@ -248,14 +254,14 @@ if __name__ == "__main__":
     credito_cliente = float(exec_sql(sql_credito).iloc[0]["CREDITO"])
 
     vista_bruta = venda_bruta_total_liq - credito_cliente
-    vista_dev   = devolucoes["Total Líquido"]
-    vista_liq   = vista_bruta - vista_dev
+    vista_dev = devolucoes["Total Líquido"]      # conforme modelo visual
+    vista_liq = vista_bruta - vista_dev
 
     prazo_bruta = prazo_dev = prazo_liq = 0.0
 
     credito_bruta = credito_cliente
-    credito_dev   = 0.0
-    credito_liq   = credito_bruta
+    credito_dev = 0.0
+    credito_liq = credito_bruta
 
     tipos_pagto = pd.DataFrame(
         {
@@ -289,13 +295,6 @@ if __name__ == "__main__":
         vendedores = vendedores.rename(columns={"VENDEDOR": "Vendedor", "TOTAL_LIQUIDO": "Total Líquido"})
     else:
         vendedores = pd.DataFrame(columns=["Vendedor", "Total Líquido"])
-
-    # ---------- CSVs para o pipeline (Option A) ----------
-    CSV_DIR = os.getenv("CSV_DIR", OUTPUT_DIR)
-    os.makedirs(CSV_DIR, exist_ok=True)
-    detalhe.to_csv(os.path.join(CSV_DIR, "fato_vendas_diario.csv"), index=False, encoding="utf-8-sig")
-    vendedores.to_csv(os.path.join(CSV_DIR, "fato_vendas_vendedor_diario.csv"), index=False, encoding="utf-8-sig")
-    print(f"[OK] CSVs gerados em {CSV_DIR}/")
 
     # ---------- Escrita em UMA ÚNICA ABA ----------
     def fname_suffix():
@@ -389,6 +388,7 @@ if __name__ == "__main__":
         # Contadores
         startrow = header_row_idx3 + len(tipos_pagto) + 3
         contadores.to_excel(writer, index=False, sheet_name=sheet, startrow=startrow)
+        # Formatar coluna Qtde
         for r in range(startrow + 1, startrow + 1 + len(contadores)):
             ws[f"B{r}"].number_format = "0"
 
