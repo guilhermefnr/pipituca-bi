@@ -1,0 +1,106 @@
+name: Periodic Period Report
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Executa de hora em hora entre 10h e 21h (GMT-3) -> 13:00–00:00 UTC
+    - cron: "0 13-23 * * *"
+    - cron: "0 0 * * *"
+
+concurrency:
+  group: period-report
+  cancel-in-progress: true
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    env:
+      TZ: America/Sao_Paulo
+      # Secrets do Syndata expostos como env (o build_period_report.py lê do .env criado abaixo)
+      SYNDATA_HOST: ${{ secrets.SYNDATA_HOST }}
+      SYNDATA_PORT: ${{ secrets.SYNDATA_PORT }}
+      SYNDATA_DB_PATH: ${{ secrets.SYNDATA_DB_PATH }}
+      SYNDATA_USER: ${{ secrets.SYNDATA_USER }}
+      SYNDATA_PASSWORD: ${{ secrets.SYNDATA_PASSWORD }}
+      SYNDATA_CHARSET: ${{ secrets.SYNDATA_CHARSET }}
+      # Google Drive (Service Account JSON e File IDs)
+      GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+      DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+      DRIVE_FILE_ID_FACT: ${{ secrets.DRIVE_FILE_ID_FACT }}
+      DRIVE_FILE_ID_FACT_VENDOR: ${{ secrets.DRIVE_FILE_ID_FACT_VENDOR }}
+
+    steps:
+      - name: Checkout repository
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (project)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install dependencies (Google Drive API)
+        run: |
+          pip install google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
+
+      - name: Create .env for the app
+        run: |
+          {
+            echo "DB_HOST=${SYNDATA_HOST}"
+            echo "DB_PORT=${SYNDATA_PORT}"
+            echo "DB_PATH=${SYNDATA_DB_PATH}"
+            echo "DB_USER=${SYNDATA_USER}"
+            echo "DB_PASSWORD=${SYNDATA_PASSWORD}"
+            # Charset opcional; mantenha se você usou no connect_db.py
+            if [ -n "${SYNDATA_CHARSET}" ]; then echo "CHARSET=${SYNDATA_CHARSET}"; fi
+          } > .env
+          cat .env | sed 's/DB_PASSWORD=.*/DB_PASSWORD=****/g'
+
+      - name: Run period report (generates the two CSVs)
+        run: |
+          mkdir -p output
+          # Se seu script aceita intervalo de datas, você pode passar args aqui.
+          # Ex.: python build_period_report.py --start first-day-of-month --end today
+          python build_period_report.py
+          ls -lh output
+
+      - name: Upload to Google Drive (by File ID)
+        run: |
+          python - << 'PY'
+          import json, os, sys
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          sa_json = os.environ["GDRIVE_SA_JSON"]
+          file_id_fact = os.environ["DRIVE_FILE_ID_FACT"]
+          file_id_vendor = os.environ["DRIVE_FILE_ID_FACT_VENDOR"]
+
+          # Arquivos gerados pelo script
+          path_fact = "output/fato_vendas_diario.csv"
+          path_vendor = "output/fato_vendas_vendedor_diario.csv"
+
+          # Verificações rápidas
+          for p in (path_fact, path_vendor):
+              if not os.path.exists(p):
+                  print(f"[ERRO] Arquivo não encontrado: {p}", file=sys.stderr)
+                  sys.exit(1)
+
+          creds = service_account.Credentials.from_service_account_info(
+              json.loads(sa_json),
+              scopes=["https://www.googleapis.com/auth/drive"]
+          )
+          drive = build("drive", "v3", credentials=creds)
+
+          def update_file(fid, local_path, mime="text/csv"):
+              media = MediaFileUpload(local_path, mimetype=mime, resumable=False)
+              drive.files().update(fileId=fid, media_body=media).execute()
+              print(f"[OK] Atualizado no Drive: {local_path} -> fileId={fid}")
+
+          update_file(file_id_fact, path_fact)
+          update_file(file_id_vendor, path_vendor)
+          PY
