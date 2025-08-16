@@ -60,6 +60,21 @@ jobs:
           # máscara de log
           sed -E 's/(DB_PASSWORD=).*/\1****/' .env
 
+      - name: Validate required secrets
+        run: |
+          ok=1
+          for v in SYNDATA_HOST SYNDATA_PORT SYNDATA_DB_PATH SYNDATA_USER SYNDATA_PASSWORD; do
+            if [ -z "${!v}" ]; then echo "::error::$v is missing"; ok=0; fi
+          done
+          echo "SYNDATA_PORT=${SYNDATA_PORT}"
+          [ $ok -eq 1 ] || exit 1
+
+      - name: Show .env (masked)
+        run: |
+          echo "----- .env -----"
+          sed -E 's/(DB_PASSWORD=).*/\1****/' .env || true
+          echo "----------------"
+
       - name: Run period report (generates the two CSVs)
         run: |
           mkdir -p output

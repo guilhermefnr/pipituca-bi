@@ -33,7 +33,7 @@ def parse_args():
 def connect_with(cs: str):
     return firebirdsql.connect(
         host=config.DB_HOST,
-        port=int(config.DB_PORT),
+        port=int(str(config.DB_PORT or "3369")),
         database=config.DB_PATH,
         user=config.DB_USER,
         password=config.DB_PASSWORD,

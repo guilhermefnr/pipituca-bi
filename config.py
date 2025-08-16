@@ -1,25 +1,30 @@
 # config.py
-
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
 
-# 1. Carrega as variáveis definidas no arquivo .env
 load_dotenv()
 
-# 2. Lê cada variável de ambiente
-DB_USER     = os.getenv('FB_USER')
-DB_PASSWORD = os.getenv('FB_PASS')
-DB_HOST     = os.getenv('FB_HOST')
-DB_PORT     = os.getenv('FB_PORT')
-DB_PATH     = os.getenv('FB_PATH')
-CHARSET     = os.getenv('FB_CHARSET')
+def _getenv(*names, default=None):
+    """Retorna o primeiro env não vazio dentre os nomes informados."""
+    for n in names:
+        v = os.getenv(n)
+        if v is not None and str(v).strip() != "":
+            return v.strip()
+    return default
 
-# 3. Função simples para testar se tudo carregou corretamente
+# Aceita FB_* (local), DB_* (legado) e SYNDATA_* (GitHub)
+DB_HOST = _getenv("FB_HOST", "DB_HOST", "SYNDATA_HOST")
+DB_PORT = _getenv("FB_PORT", "DB_PORT", "SYNDATA_PORT", default="3369")  # default
+DB_PATH = _getenv("FB_PATH", "DB_PATH", "SYNDATA_DB_PATH")
+DB_USER = _getenv("FB_USER", "DB_USER", "SYNDATA_USER")
+DB_PASSWORD = _getenv("FB_PASS", "DB_PASSWORD", "SYNDATA_PASSWORD")
+CHARSET = _getenv("FB_CHARSET", "CHARSET", "SYNDATA_CHARSET", default="UTF8")
+
 def testar_config():
     print("=== Variáveis de Configuração ===")
-    print(f"DB_USER:     {DB_USER}")
-    print(f"DB_PASSWORD: {DB_PASSWORD}")
     print(f"DB_HOST:     {DB_HOST}")
     print(f"DB_PORT:     {DB_PORT}")
     print(f"DB_PATH:     {DB_PATH}")
+    print(f"DB_USER:     {DB_USER}")
+    print(f"DB_PASSWORD: {'****' if DB_PASSWORD else ''}")
     print(f"CHARSET:     {CHARSET}")
