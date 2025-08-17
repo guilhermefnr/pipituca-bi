@@ -13,7 +13,7 @@ OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Ordem de tentativas de charset
-CHARSETS = []
+CHARSETS: list[str] = []
 if getattr(config, "CHARSET", None):
     CHARSETS.append(config.CHARSET)
 for cs in ["UTF8", "WIN1252", "ISO8859_1", "DOS850"]:
@@ -78,9 +78,8 @@ def safe_div(num, den):
         return 0.0
 
 def excel_number_formats(ws, header_row_idx: int, df: pd.DataFrame, money_cols: list[str], int_cols: list[str]):
-    from openpyxl.utils import get_column_letter as _gcl
     for col_idx, col_name in enumerate(df.columns, start=1):
-        xl_col = _gcl(col_idx)
+        xl_col = get_column_letter(col_idx)
         if col_name in money_cols:
             for row in range(header_row_idx + 1, header_row_idx + 1 + len(df)):
                 ws[f"{xl_col}{row}"].number_format = "#,##0.00"
@@ -189,6 +188,7 @@ if __name__ == "__main__":
     resumo["Tot. Bruto"] = resumo["Total Líquido (A)"] + resumo["Desconto"] - resumo["Acréscimo"]
 
     # ---------- Vendas Total do Período ----------
+    # Devoluções (TROCA_MERC) baseadas em VL_BRUTO (ajuste já acordado)
     SQL_devol = f"""
         SELECT
             SUM(CASE WHEN UPPER(TRIM(SITUACAO)) = 'TROCA_MERC'
@@ -229,7 +229,7 @@ if __name__ == "__main__":
 
     venda_liquida = {
         "Total Bruto": venda_bruta["Total Bruto"] - devolucoes["Total Bruto"],
-        "Descontos": venda_bruta["Descontos"] - devolucoes["Descontos"],
+        "Descontos":  venda_bruta["Descontos"]  - devolucoes["Descontos"],
         "Acréscimos": venda_bruta["Acréscimos"] - devolucoes["Acréscimos"],
         "Total Líquido": venda_bruta["Total Líquido"] - devolucoes["Total Líquido"],
     }
@@ -259,21 +259,21 @@ if __name__ == "__main__":
 
     tipos_pagto = pd.DataFrame(
         {
-            "Venda Bruta": [vista_bruta, prazo_bruta, credito_bruta],
-            "Devoluções Venda": [vista_dev, prazo_dev, credito_dev],
-            "Venda Líquida": [vista_liq, prazo_liq, credito_liq],
+            "Venda Bruta":       [vista_bruta, prazo_bruta, credito_bruta],
+            "Devoluções Venda":  [vista_dev,   prazo_dev,   credito_dev],
+            "Venda Líquida":     [vista_liq,   prazo_liq,   credito_liq],
         },
         index=["Vendas à Vista", "Vendas a Prazo", "Crédito Cliente"],
     )
 
     # ---------- Contadores ----------
-    total_pedidos = int(detalhe["Qtde. Pedidos (C)"].sum())
-    total_devolucoes = dev_cnt
+    total_pedidos     = int(detalhe["Qtde. Pedidos (C)"].sum())
+    total_devolucoes  = dev_cnt
     contadores = pd.DataFrame(
         {"Métrica": ["Total de Pedidos", "Total de Devoluções"], "Qtde": [total_pedidos, total_devolucoes]}
     )
 
-    # ---------- Resumo por Vendedor ----------
+    # ---------- Resumo por Vendedor (período) ----------
     where_vend = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA')")
     SQL_sellers = f"""
         SELECT
@@ -290,14 +290,7 @@ if __name__ == "__main__":
     else:
         vendedores = pd.DataFrame(columns=["Vendedor", "Total Líquido"])
 
-    # ---------- CSVs para o pipeline (Option A) ----------
-    CSV_DIR = os.getenv("CSV_DIR", OUTPUT_DIR)
-    os.makedirs(CSV_DIR, exist_ok=True)
-    detalhe.to_csv(os.path.join(CSV_DIR, "fato_vendas_diario.csv"), index=False, encoding="utf-8-sig")
-    vendedores.to_csv(os.path.join(CSV_DIR, "fato_vendas_vendedor_diario.csv"), index=False, encoding="utf-8-sig")
-    print(f"[OK] CSVs gerados em {CSV_DIR}/")
-
-    # ---------- Escrita em UMA ÚNICA ABA ----------
+    # ---------- Escrita em UMA ÚNICA ABA (Excel) ----------
     def fname_suffix():
         if START_DATE and END_DATE:
             return f"_{START_DATE.replace('-','')}_{END_DATE.replace('-','')}"
@@ -336,12 +329,8 @@ if __name__ == "__main__":
             header_row_idx,
             detalhe,
             money_cols=[
-                "Total Líquido (A)",
-                "Vl. Médio Produto (D)",
-                "Vl. Médio Pedido (E)",
-                "Desconto",
-                "Acréscimo",
-                "Tot. Bruto",
+                "Total Líquido (A)","Vl. Médio Produto (D)","Vl. Médio Pedido (E)",
+                "Desconto","Acréscimo","Tot. Bruto",
             ],
             int_cols=["Qtde. Produtos (B)", "Qtde. Pedidos (C)"],
         )
@@ -356,12 +345,8 @@ if __name__ == "__main__":
             header_row_idx2,
             resumo,
             money_cols=[
-                "Total Líquido (A)",
-                "Vl. Médio Produto (D)",
-                "Vl. Médio Pedido (E)",
-                "Desconto",
-                "Acréscimo",
-                "Tot. Bruto",
+                "Total Líquido (A)","Vl. Médio Produto (D)","Vl. Médio Pedido (E)",
+                "Desconto","Acréscimo","Tot. Bruto",
             ],
             int_cols=["Qtde. Produtos (B)", "Qtde. Pedidos (C)"],
         )
@@ -400,4 +385,25 @@ if __name__ == "__main__":
         excel_number_formats(ws, header_row_idx4, vendedores, money_cols=["Total Líquido"], int_cols=[])
 
     print(f"🧾 Excel gerado -> {xlsx_path}")
+
+    # ---------- CSVs para o pipeline (append-friendly) ----------
+    # 1) Fato diário
+    fato_diario = detalhe.copy()
+    fato_diario.insert(0, "Periodo_Inicio", START_DATE)
+    fato_diario.insert(1, "Periodo_Fim", END_DATE)
+    fato_diario.to_csv(
+        os.path.join(OUTPUT_DIR, "fato_vendas_diario.csv"),
+        index=False, encoding="utf-8-sig"
+    )
+
+    # 2) Vendas por vendedor (do período)
+    fato_vendedor = vendedores.copy()
+    fato_vendedor.insert(0, "Periodo_Inicio", START_DATE)
+    fato_vendedor.insert(1, "Periodo_Fim", END_DATE)
+    fato_vendedor.to_csv(
+        os.path.join(OUTPUT_DIR, "fato_vendas_vendedor_diario.csv"),
+        index=False, encoding="utf-8-sig"
+    )
+
+    print("🗂 CSVs gerados -> output/fato_vendas_diario.csv ; output/fato_vendas_vendedor_diario.csv")
     print("🏁 Concluído.")
