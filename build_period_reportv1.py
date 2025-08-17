@@ -13,7 +13,7 @@ OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Ordem de tentativas de charset
-CHARSETS = []
+CHARSETS: list[str] = []
 if getattr(config, "CHARSET", None):
     CHARSETS.append(config.CHARSET)
 for cs in ["UTF8", "WIN1252", "ISO8859_1", "DOS850"]:
@@ -23,7 +23,7 @@ for cs in ["UTF8", "WIN1252", "ISO8859_1", "DOS850"]:
 # ----------------- CLI -----------------
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Relatório único (Detalhe/Resumo/Vendas do Período/Tipos de Pagto/Contadores/Resumo por Vendedor) + CSVs"
+        description="Relatório único (Detalhe/Resumo/Vendas do Período/Tipos de Pagto/Contadores/Resumo por Vendedor)"
     )
     p.add_argument("--start", dest="start", help="YYYY-MM-DD (inclusivo)")
     p.add_argument("--end", dest="end", help="YYYY-MM-DD (inclusivo)")
@@ -51,13 +51,13 @@ def exec_sql(sql: str) -> pd.DataFrame:
             print(f"⚠️ Falhou charset={cs}: {e}")
     raise last  # type: ignore
 
-def build_where_date(col: str, start: str | None, end: str | None) -> str:
+def build_where_date(date_col: str, start: str | None, end: str | None) -> str:
     if start and end:
-        return f"WHERE CAST({col} AS DATE) BETWEEN DATE '{start}' AND DATE '{end}'"
+        return f"WHERE CAST({date_col} AS DATE) BETWEEN DATE '{start}' AND DATE '{end}'"
     elif start:
-        return f"WHERE CAST({col} AS DATE) >= DATE '{start}'"
+        return f"WHERE CAST({date_col} AS DATE) >= DATE '{start}'"
     elif end:
-        return f"WHERE CAST({col} AS DATE) <= DATE '{end}'"
+        return f"WHERE CAST({date_col} AS DATE) <= DATE '{end}'"
     else:
         return ""
 
@@ -78,7 +78,6 @@ def safe_div(num, den):
         return 0.0
 
 def excel_number_formats(ws, header_row_idx: int, df: pd.DataFrame, money_cols: list[str], int_cols: list[str]):
-    from openpyxl.utils import get_column_letter
     for col_idx, col_name in enumerate(df.columns, start=1):
         xl_col = get_column_letter(col_idx)
         if col_name in money_cols:
@@ -119,39 +118,17 @@ if __name__ == "__main__":
     """
     df = exec_sql(SQL_daily)
 
-    # Devoluções (líquido) por dia para TROCA_MERC
-    SQL_dev_daily = f"""
-        SELECT
-            CAST(PEDIDOS.DATA AS DATE) AS DATA,
-            SUM(
-                COALESCE(PEDIDOS.VL_BRUTO, 0)
-                - COALESCE(PEDIDOS.DESCONTO_TOTAL, 0)
-                + COALESCE(PEDIDOS.OUTRAS_DESPESAS, 0)
-            ) AS DEV_LIQ
-        FROM PEDIDOS
-        {where_plus(where_ped, "UPPER(TRIM(PEDIDOS.SITUACAO)) = 'TROCA_MERC'")}
-        GROUP BY 1
-    """
-    df_dev = exec_sql(SQL_dev_daily)
-
     if "DATA" in df.columns:
         df["DATA"] = pd.to_datetime(df["DATA"])
     for c in ["TOTAL_LIQUIDO", "QTDE_PRODUTOS", "QTDE_PEDIDOS", "DESCONTO", "ACRESCIMO"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
-    # left join devoluções por dia
-    if not df_dev.empty:
-        df_dev["DATA"] = pd.to_datetime(df_dev["DATA"])
-    df = df.merge(df_dev, on="DATA", how="left")
-    df["DEV_LIQ"] = pd.to_numeric(df["DEV_LIQ"], errors="coerce").fillna(0)
-
     df["Dia da Semana"] = dia_semana_pt(df["DATA"])
     df["Vl. Médio Produto (D)"] = df.apply(lambda r: safe_div(r["TOTAL_LIQUIDO"], r["QTDE_PRODUTOS"]), axis=1)
     df["Vl. Médio Pedido (E)"]  = df.apply(lambda r: safe_div(r["TOTAL_LIQUIDO"], r["QTDE_PEDIDOS"]), axis=1)
     df["Tot. Bruto"]            = df["TOTAL_LIQUIDO"] + df["DESCONTO"] - df["ACRESCIMO"]
 
-    # Tabela usada para Excel (mantida)
     detalhe = (
         df[
             [
@@ -182,7 +159,10 @@ if __name__ == "__main__":
     )
 
     # ---------- Resumo por dia da semana ----------
-    ordem_semana = ["Segunda-feira","Terça-feira","Quarta-feira","Quinta-feira","Sexta-feira","Sábado","Domingo"]
+    ordem_semana = [
+        "Segunda-feira","Terça-feira","Quarta-feira",
+        "Quinta-feira","Sexta-feira","Sábado","Domingo",
+    ]
     detalhe["Dia da Semana"] = pd.Categorical(detalhe["Dia da Semana"], categories=ordem_semana, ordered=True)
 
     resumo = (
@@ -208,6 +188,7 @@ if __name__ == "__main__":
     resumo["Tot. Bruto"] = resumo["Total Líquido (A)"] + resumo["Desconto"] - resumo["Acréscimo"]
 
     # ---------- Vendas Total do Período ----------
+    # Devoluções (TROCA_MERC) baseadas em VL_BRUTO (ajuste já acordado)
     SQL_devol = f"""
         SELECT
             SUM(CASE WHEN UPPER(TRIM(SITUACAO)) = 'TROCA_MERC'
@@ -228,9 +209,9 @@ if __name__ == "__main__":
     dev_cnt = int(exec_sql(SQL_devol_cnt).iloc[0]["DEV_QTD"])
 
     venda_bruta_total_bruto = float(detalhe["Tot. Bruto"].sum())
-    venda_bruta_total_liq = float(detalhe["Total Líquido (A)"].sum())
-    venda_bruta_descontos = float(detalhe["Desconto"].sum())
-    venda_bruta_acrescimos = float(detalhe["Acréscimo"].sum())
+    venda_bruta_total_liq   = float(detalhe["Total Líquido (A)"].sum())
+    venda_bruta_descontos   = float(detalhe["Desconto"].sum())
+    venda_bruta_acrescimos  = float(detalhe["Acréscimo"].sum())
 
     venda_bruta = {
         "Total Bruto": venda_bruta_total_bruto,
@@ -248,7 +229,7 @@ if __name__ == "__main__":
 
     venda_liquida = {
         "Total Bruto": venda_bruta["Total Bruto"] - devolucoes["Total Bruto"],
-        "Descontos": venda_bruta["Descontos"] - devolucoes["Descontos"],
+        "Descontos":  venda_bruta["Descontos"]  - devolucoes["Descontos"],
         "Acréscimos": venda_bruta["Acréscimos"] - devolucoes["Acréscimos"],
         "Total Líquido": venda_bruta["Total Líquido"] - devolucoes["Total Líquido"],
     }
@@ -267,52 +248,49 @@ if __name__ == "__main__":
     credito_cliente = float(exec_sql(sql_credito).iloc[0]["CREDITO"])
 
     vista_bruta = venda_bruta_total_liq - credito_cliente
-    vista_dev = devolucoes["Total Líquido"]
-    vista_liq = vista_bruta - vista_dev
+    vista_dev   = devolucoes["Total Líquido"]
+    vista_liq   = vista_bruta - vista_dev
 
     prazo_bruta = prazo_dev = prazo_liq = 0.0
+
     credito_bruta = credito_cliente
-    credito_dev = 0.0
-    credito_liq = credito_bruta
+    credito_dev   = 0.0
+    credito_liq   = credito_bruta
 
     tipos_pagto = pd.DataFrame(
         {
-            "Venda Bruta": [vista_bruta, prazo_bruta, credito_bruta],
-            "Devoluções Venda": [vista_dev, prazo_dev, credito_dev],
-            "Venda Líquida": [vista_liq, prazo_liq, credito_liq],
+            "Venda Bruta":       [vista_bruta, prazo_bruta, credito_bruta],
+            "Devoluções Venda":  [vista_dev,   prazo_dev,   credito_dev],
+            "Venda Líquida":     [vista_liq,   prazo_liq,   credito_liq],
         },
         index=["Vendas à Vista", "Vendas a Prazo", "Crédito Cliente"],
     )
 
     # ---------- Contadores ----------
-    total_pedidos = int(detalhe["Qtde. Pedidos (C)"].sum())
-    total_devolucoes = dev_cnt
+    total_pedidos     = int(detalhe["Qtde. Pedidos (C)"].sum())
+    total_devolucoes  = dev_cnt
     contadores = pd.DataFrame(
         {"Métrica": ["Total de Pedidos", "Total de Devoluções"], "Qtde": [total_pedidos, total_devolucoes]}
     )
 
-    # ---------- Resumo por Vendedor (por dia) ----------
+    # ---------- Resumo por Vendedor (período) ----------
     where_vend = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA')")
-    SQL_sellers_daily = f"""
+    SQL_sellers = f"""
         SELECT
-            CAST(PEDIDOS.DATA AS DATE) AS DATA,
             COALESCE(NULLIF(TRIM(NOME_VENDEDOR), ''), 'Sem Vendedor') AS VENDEDOR,
             SUM(COALESCE(VALOR_FINAL, 0)) AS TOTAL_LIQUIDO
         FROM PEDIDOS
         {where_vend}
-        GROUP BY 1, 2
-        ORDER BY 1, 2
+        GROUP BY 1
+        ORDER BY 2 DESC
     """
-    vendedores_diario = exec_sql(SQL_sellers_daily)
-    if not vendedores_diario.empty:
-        vendedores_diario["DATA"] = pd.to_datetime(vendedores_diario["DATA"])
-        vendedores_diario = vendedores_diario.rename(
-            columns={"DATA": "Data", "VENDEDOR": "Vendedor", "TOTAL_LIQUIDO": "Total Líquido"}
-        )
+    vendedores = exec_sql(SQL_sellers)
+    if not vendedores.empty:
+        vendedores = vendedores.rename(columns={"VENDEDOR": "Vendedor", "TOTAL_LIQUIDO": "Total Líquido"})
     else:
-        vendedores_diario = pd.DataFrame(columns=["Data", "Vendedor", "Total Líquido"])
+        vendedores = pd.DataFrame(columns=["Vendedor", "Total Líquido"])
 
-    # ---------- Escrita em UMA ÚNICA ABA ----------
+    # ---------- Escrita em UMA ÚNICA ABA (Excel) ----------
     def fname_suffix():
         if START_DATE and END_DATE:
             return f"_{START_DATE.replace('-','')}_{END_DATE.replace('-','')}"
@@ -331,14 +309,17 @@ if __name__ == "__main__":
             [
                 {"Parâmetro": "Data Inicial", "Valor": START_DATE},
                 {"Parâmetro": "Data Final", "Valor": END_DATE},
-                {"Parâmetro": "Situações consideradas (A/B/C)", "Valor": "VENDA SEPD, PEDIDO DE VENDA"},
+                {
+                    "Parâmetro": "Situações consideradas (A/B/C)",
+                    "Valor": "VENDA SEPD, PEDIDO DE VENDA",
+                },
             ]
         )
         params.to_excel(writer, index=False, sheet_name=sheet, startrow=0)
         ws = writer.sheets[sheet]
         ws.freeze_panes = "A5"
 
-        # Detalhe Diário (sem a coluna de devolução — mantido como já validado)
+        # Detalhe Diário
         startrow = len(params) + 2
         ws.cell(row=startrow, column=1, value="Detalhe Diário")
         detalhe.to_excel(writer, index=False, sheet_name=sheet, startrow=startrow)
@@ -348,12 +329,8 @@ if __name__ == "__main__":
             header_row_idx,
             detalhe,
             money_cols=[
-                "Total Líquido (A)",
-                "Vl. Médio Produto (D)",
-                "Vl. Médio Pedido (E)",
-                "Desconto",
-                "Acréscimo",
-                "Tot. Bruto",
+                "Total Líquido (A)","Vl. Médio Produto (D)","Vl. Médio Pedido (E)",
+                "Desconto","Acréscimo","Tot. Bruto",
             ],
             int_cols=["Qtde. Produtos (B)", "Qtde. Pedidos (C)"],
         )
@@ -368,12 +345,8 @@ if __name__ == "__main__":
             header_row_idx2,
             resumo,
             money_cols=[
-                "Total Líquido (A)",
-                "Vl. Médio Produto (D)",
-                "Vl. Médio Pedido (E)",
-                "Desconto",
-                "Acréscimo",
-                "Tot. Bruto",
+                "Total Líquido (A)","Vl. Médio Produto (D)","Vl. Médio Pedido (E)",
+                "Desconto","Acréscimo","Tot. Bruto",
             ],
             int_cols=["Qtde. Produtos (B)", "Qtde. Pedidos (C)"],
         )
@@ -404,35 +377,33 @@ if __name__ == "__main__":
         for r in range(startrow + 1, startrow + 1 + len(contadores)):
             ws[f"B{r}"].number_format = "0"
 
-        # Resumo por Vendedor (mantido só no CSV diário por vendedor)
-        # — não escrevemos aqui para não alterar o layout já aprovado.
-
-    # ----------------- CSVs para o BI -----------------
-    # 1) Fato diário (inclui Devoluções Venda)
-    fato_diario = (
-        df.copy()
-        .assign(**{"Devoluções Venda": df["DEV_LIQ"]})
-        .rename(
-            columns={
-                "DATA": "Data",
-                "TOTAL_LIQUIDO": "Total Líquido (A)",
-                "QTDE_PRODUTOS": "Qtde. Produtos (B)",
-                "QTDE_PEDIDOS": "Qtde. Pedidos (C)",
-                "DESCONTO": "Desconto",
-                "ACRESCIMO": "Acréscimo",
-            }
-        )
-        .loc[:, ["Data", "Dia da Semana", "Total Líquido (A)", "Qtde. Produtos (B)", "Qtde. Pedidos (C)",
-                 "Desconto", "Acréscimo", "Tot. Bruto", "Devoluções Venda"]]
-        .sort_values("Data")
-        .reset_index(drop=True)
-    )
-    fato_diario.to_csv(os.path.join(OUTPUT_DIR, "fato_vendas_diario.csv"), index=False, encoding="utf-8-sig")
-
-    # 2) Fato diário por vendedor
-    vendedores_diario.to_csv(
-        os.path.join(OUTPUT_DIR, "fato_vendas_vendedor_diario.csv"), index=False, encoding="utf-8-sig"
-    )
+        # Resumo por Vendedor
+        startrow = startrow + 3 + len(contadores)
+        ws.cell(row=startrow, column=1, value="Resumo por Vendedor")
+        vendedores.to_excel(writer, index=False, sheet_name=sheet, startrow=startrow)
+        header_row_idx4 = startrow + 1
+        excel_number_formats(ws, header_row_idx4, vendedores, money_cols=["Total Líquido"], int_cols=[])
 
     print(f"🧾 Excel gerado -> {xlsx_path}")
+
+    # ---------- CSVs para o pipeline (append-friendly) ----------
+    # 1) Fato diário
+    fato_diario = detalhe.copy()
+    fato_diario.insert(0, "Periodo_Inicio", START_DATE)
+    fato_diario.insert(1, "Periodo_Fim", END_DATE)
+    fato_diario.to_csv(
+        os.path.join(OUTPUT_DIR, "fato_vendas_diario.csv"),
+        index=False, encoding="utf-8-sig"
+    )
+
+    # 2) Vendas por vendedor (do período)
+    fato_vendedor = vendedores.copy()
+    fato_vendedor.insert(0, "Periodo_Inicio", START_DATE)
+    fato_vendedor.insert(1, "Periodo_Fim", END_DATE)
+    fato_vendedor.to_csv(
+        os.path.join(OUTPUT_DIR, "fato_vendas_vendedor_diario.csv"),
+        index=False, encoding="utf-8-sig"
+    )
+
+    print("🗂 CSVs gerados -> output/fato_vendas_diario.csv ; output/fato_vendas_vendedor_diario.csv")
     print("🏁 Concluído.")
