@@ -23,7 +23,7 @@ for cs in ["UTF8", "WIN1252", "ISO8859_1", "DOS850"]:
 # ----------------- CLI -----------------
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Relatório único (Detalhe/Resumo/Vendas do Período/Tipos de Pagto/Contadores/Resumo por Vendedor)"
+        description="Relatório único (Detalhe/Resumo/Vendas do Período/Tipos de Pagto/Contadores/Resumo por Vendedor) + CSVs"
     )
     p.add_argument("--start", dest="start", help="YYYY-MM-DD (inclusivo)")
     p.add_argument("--end", dest="end", help="YYYY-MM-DD (inclusivo)")
@@ -87,6 +87,21 @@ def excel_number_formats(ws, header_row_idx: int, df: pd.DataFrame, money_cols: 
             for row in range(header_row_idx + 1, header_row_idx + 1 + len(df)):
                 ws[f"{xl_col}{row}"].number_format = "0"
 
+def append_dedup(df: pd.DataFrame, path: str, key_cols: list[str]):
+    """Append com dedupe pelas chaves informadas."""
+    df = df.copy()
+    # normaliza Data para string YYYY-MM-DD se existir
+    for kc in key_cols:
+        if kc.lower() == "data" and kc in df.columns:
+            df[kc] = pd.to_datetime(df[kc]).dt.strftime("%Y-%m-%d")
+    if os.path.exists(path):
+        old = pd.read_csv(path)
+        combo = pd.concat([old, df], ignore_index=True)
+        combo = combo.drop_duplicates(key_cols, keep="last")
+        combo.to_csv(path, index=False, encoding="utf-8-sig")
+    else:
+        df.to_csv(path, index=False, encoding="utf-8-sig")
+
 # ----------------- main -----------------
 if __name__ == "__main__":
     args = parse_args()
@@ -118,53 +133,61 @@ if __name__ == "__main__":
     """
     df = exec_sql(SQL_daily)
 
+    # ---------- Devoluções por dia (TROCA_MERC) ----------
+    SQL_dev_day = f"""
+        SELECT
+            CAST(DATA AS DATE) AS DATA,
+            SUM(CASE WHEN UPPER(TRIM(SITUACAO)) = 'TROCA_MERC'
+                     THEN COALESCE(VALOR_FINAL, 0) ELSE 0 END) AS DEVOLUCOES_VENDA
+        FROM PEDIDOS
+        {where_ped}
+        GROUP BY 1
+        ORDER BY 1
+    """
+    df_dev = exec_sql(SQL_dev_day)
+
+    # ---------- Crédito Cliente por dia (MOVCAIXA) ----------
+    where_mov = build_where_date("MOVCAIXA.DATA_HORA", START_DATE, END_DATE)
+    SQL_credit_day = f"""
+        SELECT
+            CAST(DATA_HORA AS DATE) AS DATA,
+            SUM(CASE WHEN UPPER(TRIM(DOCUMENTO)) = 'VENDA'
+                     THEN COALESCE(VALOR_APRAZO, 0) ELSE 0 END) AS CREDITO_CLIENTE
+        FROM MOVCAIXA
+        {where_mov}
+        GROUP BY 1
+        ORDER BY 1
+    """
+    df_credit = exec_sql(SQL_credit_day)
+
+    # Tipagem e merges
     if "DATA" in df.columns:
         df["DATA"] = pd.to_datetime(df["DATA"])
     for c in ["TOTAL_LIQUIDO", "QTDE_PRODUTOS", "QTDE_PEDIDOS", "DESCONTO", "ACRESCIMO"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
+    if not df_dev.empty:
+        df_dev["DATA"] = pd.to_datetime(df_dev["DATA"])
+        df = df.merge(df_dev, on="DATA", how="left")
+    else:
+        df["DEVOLUCOES_VENDA"] = 0.0
+
+    if not df_credit.empty:
+        df_credit["DATA"] = pd.to_datetime(df_credit["DATA"])
+        df = df.merge(df_credit, on="DATA", how="left")
+    else:
+        df["CREDITO_CLIENTE"] = 0.0
+
+    df["DEVOLUCOES_VENDA"] = pd.to_numeric(df.get("DEVOLUCOES_VENDA", 0), errors="coerce").fillna(0.0)
+    df["CREDITO_CLIENTE"] = pd.to_numeric(df.get("CREDITO_CLIENTE", 0), errors="coerce").fillna(0.0)
+
+    # Enriquecimentos do Detalhe
     df["Dia da Semana"] = dia_semana_pt(df["DATA"])
     df["Vl. Médio Produto (D)"] = df.apply(lambda r: safe_div(r["TOTAL_LIQUIDO"], r["QTDE_PRODUTOS"]), axis=1)
     df["Vl. Médio Pedido (E)"]  = df.apply(lambda r: safe_div(r["TOTAL_LIQUIDO"], r["QTDE_PEDIDOS"]), axis=1)
     df["Tot. Bruto"]            = df["TOTAL_LIQUIDO"] + df["DESCONTO"] - df["ACRESCIMO"]
 
-    # ---------- Devoluções por dia (TROCA_MERC em PEDIDOS) ----------
-    SQL_dev_daily = f"""
-        SELECT
-            CAST(PEDIDOS.DATA AS DATE) AS DATA,
-            SUM(COALESCE(PEDIDOS.VALOR_FINAL, 0)) AS DEVOLUCOES_VENDA
-        FROM PEDIDOS
-        {where_plus(where_ped, "UPPER(TRIM(PEDIDOS.SITUACAO)) = 'TROCA_MERC'")}
-        GROUP BY 1
-        ORDER BY 1
-    """
-    df_dev = exec_sql(SQL_dev_daily)
-    if not df_dev.empty:
-        df_dev["DATA"] = pd.to_datetime(df_dev["DATA"])
-        df_dev["DEVOLUCOES_VENDA"] = pd.to_numeric(df_dev["DEVOLUCOES_VENDA"], errors="coerce").fillna(0)
-    else:
-        df_dev = pd.DataFrame(columns=["DATA", "DEVOLUCOES_VENDA"])
-
-    # ---------- Crédito Cliente por dia (MOVCAIXA) ----------
-    where_mov = build_where_date("MOVCAIXA.DATA_HORA", START_DATE, END_DATE)
-    SQL_credito_daily = f"""
-        SELECT
-            CAST(MOVCAIXA.DATA_HORA AS DATE) AS DATA,
-            SUM(COALESCE(MOVCAIXA.VALOR_APRAZO, 0)) AS CREDITO_CLIENTE
-        FROM MOVCAIXA
-        {where_plus(where_mov, "UPPER(TRIM(MOVCAIXA.DOCUMENTO)) = 'VENDA'")}
-        GROUP BY 1
-        ORDER BY 1
-    """
-    df_cred = exec_sql(SQL_credito_daily)
-    if not df_cred.empty:
-        df_cred["DATA"] = pd.to_datetime(df_cred["DATA"])
-        df_cred["CREDITO_CLIENTE"] = pd.to_numeric(df_cred["CREDITO_CLIENTE"], errors="coerce").fillna(0)
-    else:
-        df_cred = pd.DataFrame(columns=["DATA", "CREDITO_CLIENTE"])
-
-    # ---------- Monta 'detalhe' (para Excel) ----------
     detalhe = (
         df[
             [
@@ -178,6 +201,8 @@ if __name__ == "__main__":
                 "DESCONTO",
                 "ACRESCIMO",
                 "Tot. Bruto",
+                "DEVOLUCOES_VENDA",
+                "CREDITO_CLIENTE",
             ]
         ]
         .rename(
@@ -188,6 +213,8 @@ if __name__ == "__main__":
                 "QTDE_PEDIDOS": "Qtde. Pedidos (C)",
                 "DESCONTO": "Desconto",
                 "ACRESCIMO": "Acréscimo",
+                "DEVOLUCOES_VENDA": "Devoluções Venda",
+                "CREDITO_CLIENTE": "Crédito Cliente",
             }
         )
         .sort_values("Data")
@@ -196,8 +223,13 @@ if __name__ == "__main__":
 
     # ---------- Resumo por dia da semana ----------
     ordem_semana = [
-        "Segunda-feira","Terça-feira","Quarta-feira",
-        "Quinta-feira","Sexta-feira","Sábado","Domingo",
+        "Segunda-feira",
+        "Terça-feira",
+        "Quarta-feira",
+        "Quinta-feira",
+        "Sexta-feira",
+        "Sábado",
+        "Domingo",
     ]
     detalhe["Dia da Semana"] = pd.Categorical(detalhe["Dia da Semana"], categories=ordem_semana, ordered=True)
 
@@ -210,6 +242,8 @@ if __name__ == "__main__":
                 "Qtde. Pedidos (C)": ("Qtde. Pedidos (C)", "sum"),
                 "Desconto": ("Desconto", "sum"),
                 "Acréscimo": ("Acréscimo", "sum"),
+                "Devoluções Venda": ("Devoluções Venda", "sum"),
+                "Crédito Cliente": ("Crédito Cliente", "sum"),
             }
         )
         .sort_values("Dia da Semana")
@@ -224,6 +258,7 @@ if __name__ == "__main__":
     resumo["Tot. Bruto"] = resumo["Total Líquido (A)"] + resumo["Desconto"] - resumo["Acréscimo"]
 
     # ---------- Vendas Total do Período ----------
+    # Devoluções (TROCA_MERC) baseadas em VL_BRUTO (ajuste solicitado)
     SQL_devol = f"""
         SELECT
             SUM(CASE WHEN UPPER(TRIM(SITUACAO)) = 'TROCA_MERC'
@@ -274,20 +309,14 @@ if __name__ == "__main__":
     )
 
     # ---------- Totais por Tipo de Pagamento ----------
-    where_mov = build_where_date("MOVCAIXA.DATA_HORA", START_DATE, END_DATE)
-    sql_credito = f"""
-        SELECT COALESCE(SUM(VALOR_APRAZO), 0) AS CREDITO
-        FROM MOVCAIXA
-        {where_plus(where_mov, "UPPER(TRIM(DOCUMENTO)) = 'VENDA'")}
-    """
-    credito_cliente_total = float(exec_sql(sql_credito).iloc[0]["CREDITO"])
+    # crédito cliente já apurado por dia para o CSV; aqui usamos o total do período:
+    credito_cliente_total = float(df["CREDITO_CLIENTE"].sum())
 
     vista_bruta = venda_bruta_total_liq - credito_cliente_total
     vista_dev = devolucoes["Total Líquido"]
     vista_liq = vista_bruta - vista_dev
 
-    prazo_bruta = prazo_dev = prazo_liq = 0.0
-
+    prazo_bruta = prazo_dev = prazo_liq = 0.0  # placeholder (não há regra definida)
     credito_bruta = credito_cliente_total
     credito_dev = 0.0
     credito_liq = credito_bruta
@@ -308,7 +337,7 @@ if __name__ == "__main__":
         {"Métrica": ["Total de Pedidos", "Total de Devoluções"], "Qtde": [total_pedidos, total_devolucoes]}
     )
 
-    # ---------- Resumo por Vendedor ----------
+    # ---------- Resumo por Vendedor (PERÍODO - para o Excel) ----------
     where_vend = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA')")
     SQL_sellers = f"""
         SELECT
@@ -325,31 +354,51 @@ if __name__ == "__main__":
     else:
         vendedores = pd.DataFrame(columns=["Vendedor", "Total Líquido"])
 
-    # ========== CSVs de Fato (não mexe no Excel) ==========
-    # Junta devoluções/dia e crédito/dia ao detalhe apenas para o CSV
-    fact_daily = detalhe.merge(df_dev.rename(columns={"DATA": "Data"}), on="Data", how="left")
-    fact_daily = fact_daily.merge(df_cred.rename(columns={"DATA": "Data"}), on="Data", how="left")
-    # Preenche 0 nas novas colunas se não houver dados no dia
-    if "DEVOLUCOES_VENDA" not in fact_daily.columns:
-        fact_daily["DEVOLUCOES_VENDA"] = 0.0
-    if "CREDITO_CLIENTE" not in fact_daily.columns:
-        fact_daily["CREDITO_CLIENTE"] = 0.0
-    fact_daily["DEVOLUCOES_VENDA"] = fact_daily["DEVOLUCOES_VENDA"].fillna(0.0)
-    fact_daily["CREDITO_CLIENTE"] = fact_daily["CREDITO_CLIENTE"].fillna(0.0)
+    # ---------- Fato diário por VENDEDOR (para CSV) ----------
+    where_vend_day = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA')")
+    SQL_vendor_daily = f"""
+        SELECT
+            CAST(DATA AS DATE) AS DATA,
+            COALESCE(NULLIF(TRIM(NOME_VENDEDOR), ''), 'Sem Vendedor') AS VENDEDOR,
+            SUM(COALESCE(VALOR_FINAL, 0)) AS TOTAL_LIQUIDO
+        FROM PEDIDOS
+        {where_vend_day}
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+    """
+    vendor_daily = exec_sql(SQL_vendor_daily)
+    if not vendor_daily.empty:
+        vendor_daily = vendor_daily.rename(
+            columns={"DATA": "Data", "VENDEDOR": "Vendedor", "TOTAL_LIQUIDO": "Total Líquido"}
+        )
+        vendor_daily["Data"] = pd.to_datetime(vendor_daily["Data"]).dt.strftime("%Y-%m-%d")
+        out_vendor = os.path.join(OUTPUT_DIR, "fato_vendas_vendedor_diario.csv")
+        append_dedup(vendor_daily, out_vendor, key_cols=["Data", "Vendedor"])
+        print(f"🟢 Atualizado: {out_vendor}")
+    else:
+        print("ℹ️ Nenhuma linha para fato_vendas_vendedor_diario no período.")
 
-    # Renomeia colunas finais do CSV (mantendo as existentes + novas)
-    fact_daily = fact_daily.rename(
-        columns={
-            "DEVOLUCOES_VENDA": "Devoluções Venda",
-            "CREDITO_CLIENTE": "Crédito Cliente",
-        }
-    )
-    fact_daily_path = os.path.join(OUTPUT_DIR, "fato_vendas_diario.csv")
-    fact_daily.to_csv(fact_daily_path, index=False, encoding="utf-8-sig")
+    # ---------- Escrita do CSV diário principal (para o Looker) ----------
+    fato_daily = detalhe.copy()
+    # ordena colunas principais (mantendo as métricas novas)
+    cols_order = [
+        "Data",
+        "Dia da Semana",
+        "Total Líquido (A)",
+        "Qtde. Produtos (B)",
+        "Qtde. Pedidos (C)",
+        "Desconto",
+        "Acréscimo",
+        "Tot. Bruto",
+        "Devoluções Venda",
+        "Crédito Cliente",
+    ]
+    fato_daily = fato_daily[cols_order]
+    out_fact = os.path.join(OUTPUT_DIR, "fato_vendas_diario.csv")
+    append_dedup(fato_daily, out_fact, key_cols=["Data"])
+    print(f"🟢 Atualizado: {out_fact}")
 
-    # (CSV de vendedores diários é gerado pelo fluxo já existente; não alterado aqui)
-
-    # ---------- Escrita em UMA ÚNICA ABA (Excel permanece igual) ----------
+    # ---------- Escrita em UMA ÚNICA ABA (Excel) ----------
     def fname_suffix():
         if START_DATE and END_DATE:
             return f"_{START_DATE.replace('-','')}_{END_DATE.replace('-','')}"
@@ -378,7 +427,7 @@ if __name__ == "__main__":
         ws = writer.sheets[sheet]
         ws.freeze_panes = "A5"
 
-        # Detalhe Diário (sem as novas colunas, para manter layout)
+        # Detalhe Diário
         startrow = len(params) + 2
         ws.cell(row=startrow, column=1, value="Detalhe Diário")
         detalhe.to_excel(writer, index=False, sheet_name=sheet, startrow=startrow)
@@ -394,6 +443,8 @@ if __name__ == "__main__":
                 "Desconto",
                 "Acréscimo",
                 "Tot. Bruto",
+                "Devoluções Venda",
+                "Crédito Cliente",
             ],
             int_cols=["Qtde. Produtos (B)", "Qtde. Pedidos (C)"],
         )
@@ -414,6 +465,8 @@ if __name__ == "__main__":
                 "Desconto",
                 "Acréscimo",
                 "Tot. Bruto",
+                "Devoluções Venda",
+                "Crédito Cliente",
             ],
             int_cols=["Qtde. Produtos (B)", "Qtde. Pedidos (C)"],
         )
@@ -441,10 +494,11 @@ if __name__ == "__main__":
         # Contadores
         startrow = header_row_idx3 + len(tipos_pagto) + 3
         contadores.to_excel(writer, index=False, sheet_name=sheet, startrow=startrow)
+        # Formatar coluna Qtde
         for r in range(startrow + 1, startrow + 1 + len(contadores)):
             ws[f"B{r}"].number_format = "0"
 
-        # Resumo por Vendedor
+        # Resumo por Vendedor (período)
         startrow = startrow + 3 + len(contadores)
         ws.cell(row=startrow, column=1, value="Resumo por Vendedor")
         vendedores.to_excel(writer, index=False, sheet_name=sheet, startrow=startrow)
@@ -452,5 +506,4 @@ if __name__ == "__main__":
         excel_number_formats(ws, header_row_idx4, vendedores, money_cols=["Total Líquido"], int_cols=[])
 
     print(f"🧾 Excel gerado -> {xlsx_path}")
-    print(f"🗂️ CSV fato diário -> {fact_daily_path}")
     print("🏁 Concluído.")
