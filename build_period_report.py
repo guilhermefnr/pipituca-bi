@@ -109,20 +109,23 @@ if __name__ == "__main__":
     END_DATE = args.end
 
     # ---------- Detalhe Diário (PEDIDOS) ----------
-    where_ped = build_where_date("PEDIDOS.DATA", START_DATE, END_DATE)
+    # [Ajuste: usar DATA_VENDA como eixo de data]
+    where_ped = build_where_date("PEDIDOS.DATA_VENDA", START_DATE, END_DATE)
     SQL_daily = f"""
         SELECT
-            CAST(PEDIDOS.DATA AS DATE) AS DATA,
+            CAST(PEDIDOS.DATA_VENDA AS DATE) AS DATA,  -- eixo: DATA_VENDA
             SUM(CASE
-                    WHEN UPPER(TRIM(PEDIDOS.SITUACAO)) IN ('VENDA SEPD', 'PEDIDO DE VENDA')
+                    WHEN UPPER(TRIM(PEDIDOS.SITUACAO)) IN ('VENDA SEPD', 'PEDIDO DE VENDA', 'VDA HOMOLOG')
                     THEN COALESCE(PEDIDOS.VALOR_FINAL, 0)
                     ELSE 0
                 END) AS TOTAL_LIQUIDO,
             SUM(CASE WHEN UPPER(TRIM(PEDIDOS.SITUACAO)) = 'VENDA SEPD'
                      THEN COALESCE(PEDIDOS.QUANT_TRANSP, 0) ELSE 0 END)
             + SUM(CASE WHEN UPPER(TRIM(PEDIDOS.SITUACAO)) = 'PEDIDO DE VENDA'
+                       THEN COALESCE(PEDIDOS.PSEQ_ITEM, 0) ELSE 0 END)
+            + SUM(CASE WHEN UPPER(TRIM(PEDIDOS.SITUACAO)) = 'VDA HOMOLOG'
                        THEN COALESCE(PEDIDOS.PSEQ_ITEM, 0) ELSE 0 END) AS QTDE_PRODUTOS,
-            SUM(CASE WHEN UPPER(TRIM(PEDIDOS.SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA')
+            SUM(CASE WHEN UPPER(TRIM(PEDIDOS.SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA','VDA HOMOLOG')
                      THEN 1 ELSE 0 END) AS QTDE_PEDIDOS,
             SUM(COALESCE(PEDIDOS.DESCONTO_TOTAL, 0))  AS DESCONTO,
             SUM(COALESCE(PEDIDOS.OUTRAS_DESPESAS, 0)) AS ACRESCIMO
@@ -134,9 +137,10 @@ if __name__ == "__main__":
     df = exec_sql(SQL_daily)
 
     # ---------- Devoluções por dia (TROCA_MERC) ----------
+    # [Ajuste: alinhar eixo de data para DATA_VENDA]
     SQL_dev_day = f"""
         SELECT
-            CAST(DATA AS DATE) AS DATA,
+            CAST(DATA_VENDA AS DATE) AS DATA,
             SUM(CASE WHEN UPPER(TRIM(SITUACAO)) = 'TROCA_MERC'
                      THEN COALESCE(VALOR_FINAL, 0) ELSE 0 END) AS DEVOLUCOES_VENDA
         FROM PEDIDOS
@@ -147,6 +151,7 @@ if __name__ == "__main__":
     df_dev = exec_sql(SQL_dev_day)
 
     # ---------- Crédito Cliente por dia (MOVCAIXA) ----------
+    # Permanece por DATA_HORA do MOVCAIXA
     where_mov = build_where_date("MOVCAIXA.DATA_HORA", START_DATE, END_DATE)
     SQL_credit_day = f"""
         SELECT
@@ -338,7 +343,8 @@ if __name__ == "__main__":
     )
 
     # ---------- Resumo por Vendedor (PERÍODO - para o Excel) ----------
-    where_vend = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA')")
+    # where_ped já é por DATA_VENDA; filtros de situação mantidos
+    where_vend = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA','VDA HOMOLOG')")
     SQL_sellers = f"""
         SELECT
             COALESCE(NULLIF(TRIM(NOME_VENDEDOR), ''), 'Sem Vendedor') AS VENDEDOR,
@@ -355,10 +361,10 @@ if __name__ == "__main__":
         vendedores = pd.DataFrame(columns=["Vendedor", "Total Líquido"])
 
     # ---------- Fato diário por VENDEDOR (para CSV) ----------
-    where_vend_day = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA')")
+    where_vend_day = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA','VDA HOMOLOG')")
     SQL_vendor_daily = f"""
         SELECT
-            CAST(DATA AS DATE) AS DATA,
+            CAST(DATA_VENDA AS DATE) AS DATA,  -- eixo: DATA_VENDA
             COALESCE(NULLIF(TRIM(NOME_VENDEDOR), ''), 'Sem Vendedor') AS VENDEDOR,
             SUM(COALESCE(VALOR_FINAL, 0)) AS TOTAL_LIQUIDO
         FROM PEDIDOS
@@ -419,7 +425,7 @@ if __name__ == "__main__":
                 {"Parâmetro": "Data Final", "Valor": END_DATE},
                 {
                     "Parâmetro": "Situações consideradas (A/B/C)",
-                    "Valor": "VENDA SEPD, PEDIDO DE VENDA",
+                    "Valor": "VENDA SEPD, PEDIDO DE VENDA, VDA HOMOLOG",
                 },
             ]
         )
