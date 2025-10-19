@@ -1,0 +1,106 @@
+# .github/workflows/estoque-grade.yml
+name: Estoque Grade Daily Update
+
+on:
+  workflow_dispatch:  # Permite execução manual
+  schedule:
+    # 21h30 BRT (GMT-3) = 00:30 UTC
+    - cron: '30 0 * * *'
+
+concurrency:
+  group: estoque-grade
+  cancel-in-progress: true
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # Bibliotecas para upload ao Google Drive
+          pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+
+      - name: Create .env for database connection
+        run: |
+          cat > .env <<'ENV'
+          FB_HOST=${{ secrets.SYNDATA_HOST }}
+          FB_PORT=${{ secrets.SYNDATA_PORT }}
+          FB_PATH=${{ secrets.SYNDATA_DB_PATH }}
+          FB_USER=${{ secrets.SYNDATA_USER }}
+          FB_PASS=${{ secrets.SYNDATA_PASSWORD }}
+          FB_CHARSET=${{ secrets.SYNDATA_CHARSET }}
+          ENV
+
+      - name: Show .env (masked)
+        run: |
+          echo "==== .env (mascarado pelo GitHub) ===="
+          cat .env
+
+      - name: Run estoque_grade.py
+        run: |
+          mkdir -p output
+          python estoque_grade.py
+          echo "=== Arquivo gerado ==="
+          ls -la output/ESTOQUE_GRADE.xlsx
+
+      - name: Write Google Service Account credentials
+        run: |
+          echo '${{ secrets.GDRIVE_SA_JSON }}' > google_sa.json
+
+      - name: Upload Excel to Google Drive
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/google_sa.json
+          FILE_ID_ESTOQUE: ${{ secrets.DRIVE_FILE_ID_ESTOQUE_GRADE }}
+        run: |
+          python - <<'PY'
+          import os, sys
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          # Autenticar
+          creds = service_account.Credentials.from_service_account_file(
+              os.environ["GOOGLE_APPLICATION_CREDENTIALS"],
+              scopes=["https://www.googleapis.com/auth/drive"]
+          )
+          drive = build("drive", "v3", credentials=creds)
+
+          # Caminho do arquivo e File ID
+          excel_path = "output/ESTOQUE_GRADE.xlsx"
+          file_id = os.environ["FILE_ID_ESTOQUE"]
+
+          # Verificar se arquivo existe
+          if not os.path.exists(excel_path):
+              print(f"[ERRO] Arquivo não encontrado: {excel_path}")
+              sys.exit(1)
+
+          # Upload (atualiza o arquivo existente)
+          media = MediaFileUpload(
+              excel_path,
+              mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              resumable=False
+          )
+          
+          drive.files().update(fileId=file_id, media_body=media).execute()
+          
+          print(f"[OK] Arquivo atualizado no Google Drive")
+          print(f"     File ID: {file_id}")
+          print(f"     Arquivo local: {excel_path}")
+          PY
+
+      - name: Cleanup
+        run: |
+          echo "🧹 Limpando arquivos temporários..."
+          rm -f google_sa.json
+          echo "✅ Concluído!"
