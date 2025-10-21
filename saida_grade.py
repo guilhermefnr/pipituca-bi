@@ -200,6 +200,33 @@ def main():
     else:
         df_consolidado['MKP'] = 0
     
+    # Calcular FATURAMENTO = QTD_SAIDA × PRECO_VENDA
+    if 'PRECO_VEND' in df_consolidado.columns:
+        df_consolidado['FATURAMENTO'] = (df_consolidado['QTD_SAIDA'] * df_consolidado['PRECO_VEND'].fillna(0)).round(2)
+        print(f"   ✅ Faturamento total: R$ {df_consolidado['FATURAMENTO'].sum():,.2f}")
+    else:
+        df_consolidado['FATURAMENTO'] = 0
+    
+    # Calcular CUSTO_TOTAL = QTD_SAIDA × PRECO_CUSTO
+    if 'PRECO_CUST' in df_consolidado.columns:
+        df_consolidado['CUSTO_TOTAL'] = (df_consolidado['QTD_SAIDA'] * df_consolidado['PRECO_CUST'].fillna(0)).round(2)
+        print(f"   ✅ Custo total: R$ {df_consolidado['CUSTO_TOTAL'].sum():,.2f}")
+    else:
+        df_consolidado['CUSTO_TOTAL'] = 0
+    
+    # Calcular LUCRO_BRUTO = FATURAMENTO - CUSTO_TOTAL
+    df_consolidado['LUCRO_BRUTO'] = (df_consolidado['FATURAMENTO'] - df_consolidado['CUSTO_TOTAL']).round(2)
+    print(f"   ✅ Lucro bruto total: R$ {df_consolidado['LUCRO_BRUTO'].sum():,.2f}")
+    
+    # Calcular MARGEM_BRUTA = (FATURAMENTO / CUSTO_TOTAL)
+    df_consolidado['MARGEM_BRUTA'] = df_consolidado.apply(
+        lambda row: ((row['FATURAMENTO'] / row['CUSTO_TOTAL'])) 
+                    if row['CUSTO_TOTAL'] > 0 
+                    else 0,
+        axis=1
+    ).round(2)
+    print(f"   ✅ Margem bruta média: {df_consolidado['MARGEM_BRUTA'].mean():.2f}")
+    
     # ============================================================================
     # 6. ORGANIZAR COLUNAS FINAIS
     # ============================================================================
@@ -220,7 +247,11 @@ def main():
         'QTD_SAIDA': 'QTD_SAIDA',
         'PRECO_CUST': 'PRECO_CUSTO',
         'PRECO_VEND': 'PRECO_VENDA',
-        'MKP': 'MKP'
+        'MKP': 'MKP',
+        'FATURAMENTO': 'FATURAMENTO',
+        'CUSTO_TOTAL': 'CUSTO_TOTAL',
+        'LUCRO_BRUTO': 'LUCRO_BRUTO',
+        'MARGEM_BRUTA': 'MARGEM_BRUTA'
     }
     
     colunas_existentes = [col for col in colunas_finais.keys() if col in df_consolidado.columns]
