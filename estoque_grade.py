@@ -268,17 +268,16 @@ def main():
     print(f"   • Colunas: {len(df_final.columns)}")
     
     # ============================================================================
-    # 8. SALVAR
+    # 8. SALVAR CSV (para upload ao Sheets)
     # ============================================================================
-    xlsx_path = os.path.join(OUTPUT_DIR, "ESTOQUE_GRADE.xlsx")
+    csv_path = os.path.join(OUTPUT_DIR, "ESTOQUE_GRADE.csv")
     
-    print(f"\n💾 Salvando {xlsx_path}...", end=" ", flush=True)
+    print(f"\n💾 Salvando {csv_path}...", end=" ", flush=True)
     
     try:
-        with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
-            df_final.to_excel(writer, index=False, sheet_name="ESTOQUE_GRADE")
+        df_final.to_csv(csv_path, index=False, encoding='utf-8')
         
-        tamanho_mb = os.path.getsize(xlsx_path) / (1024 * 1024)
+        tamanho_mb = os.path.getsize(csv_path) / (1024 * 1024)
         duracao = (datetime.now() - inicio).total_seconds()
         
         print(f"✅ {tamanho_mb:.2f} MB em {duracao:.1f}s")

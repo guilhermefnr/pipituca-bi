@@ -1,6 +1,7 @@
 """
 Upload de CSV para Google Sheets via Sheets API
 Escreve diretamente nas células sem conversão de formato
+Versão genérica - usa variáveis de ambiente
 """
 import os
 import sys
@@ -10,18 +11,19 @@ from googleapiclient.discovery import build
 
 # Configurações
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-CSV_PATH = 'output/SAIDA_GRADE.csv'
-SHEET_NAME = 'SAIDA_GRADE'  # Nome da aba
 
 def main():
     print("\n" + "=" * 80)
     print("📤 UPLOAD PARA GOOGLE SHEETS")
     print("=" * 80)
     
-    # Validar variáveis de ambiente
+    # Ler variáveis de ambiente
     creds_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
     sheet_id = os.environ.get('SHEET_ID')
+    csv_path = os.environ.get('CSV_FILE', 'output/SAIDA_GRADE.csv')  # Default
+    sheet_name = os.environ.get('SHEET_NAME', 'SAIDA_GRADE')  # Default
     
+    # Validar variáveis
     if not creds_path:
         print("❌ GOOGLE_APPLICATION_CREDENTIALS não definida")
         sys.exit(1)
@@ -31,13 +33,13 @@ def main():
         sys.exit(1)
     
     # Verificar se CSV existe
-    if not os.path.exists(CSV_PATH):
-        print(f"❌ Arquivo não encontrado: {CSV_PATH}")
+    if not os.path.exists(csv_path):
+        print(f"❌ Arquivo não encontrado: {csv_path}")
         sys.exit(1)
     
-    print(f"📂 Arquivo: {CSV_PATH}")
+    print(f"📂 Arquivo: {csv_path}")
     print(f"🔑 Sheet ID: {sheet_id}")
-    print(f"📄 Aba: {SHEET_NAME}")
+    print(f"📄 Aba: {sheet_name}")
     
     # Autenticar
     print(f"\n🔐 Autenticando...", end=" ", flush=True)
@@ -49,17 +51,17 @@ def main():
     
     # Ler CSV
     print(f"📖 Lendo CSV...", end=" ", flush=True)
-    with open(CSV_PATH, 'r', encoding='utf-8') as f:
+    with open(csv_path, 'r', encoding='utf-8') as f:
         reader = csv.reader(f)
         values = list(reader)
     print(f"✅ {len(values):,} linhas")
     
     # Limpar aba existente
-    print(f"🧹 Limpando aba '{SHEET_NAME}'...", end=" ", flush=True)
+    print(f"🧹 Limpando aba '{sheet_name}'...", end=" ", flush=True)
     try:
         service.spreadsheets().values().clear(
             spreadsheetId=sheet_id,
-            range=f"{SHEET_NAME}!A:ZZ"
+            range=f"{sheet_name}!A:ZZ"
         ).execute()
         print("✅")
     except Exception as e:
@@ -71,7 +73,7 @@ def main():
                 body={
                     'requests': [{
                         'addSheet': {
-                            'properties': {'title': SHEET_NAME}
+                            'properties': {'title': sheet_name}
                         }
                     }]
                 }
@@ -85,7 +87,7 @@ def main():
     try:
         result = service.spreadsheets().values().update(
             spreadsheetId=sheet_id,
-            range=f"{SHEET_NAME}!A1",
+            range=f"{sheet_name}!A1",
             valueInputOption='RAW',
             body={'values': values}
         ).execute()
@@ -107,7 +109,7 @@ def main():
         
         sheet_gid = None
         for sheet in sheet_metadata.get('sheets', []):
-            if sheet['properties']['title'] == SHEET_NAME:
+            if sheet['properties']['title'] == sheet_name:
                 sheet_gid = sheet['properties']['sheetId']
                 break
         
