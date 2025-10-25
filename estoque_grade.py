@@ -267,6 +267,11 @@ def main():
     print(f"   • Saldo total: {df_final['SALDO_GRADE'].sum():,.0f} unidades")
     print(f"   • Colunas: {len(df_final.columns)}")
     
+        # Forçar COD_GRADE_TAMANHO como texto (resolve P, M, G)
+    if 'COD_GRADE_TAMANHO' in df_final.columns:
+        df_final['COD_GRADE_TAMANHO'] = df_final['COD_GRADE_TAMANHO'].astype(str)
+        df_final['COD_GRADE_TAMANHO'] = "'" + df_final['COD_GRADE_TAMANHO'].fillna('')
+        
     # ============================================================================
     # 8. SALVAR CSV (para upload ao Sheets)
     # ============================================================================
