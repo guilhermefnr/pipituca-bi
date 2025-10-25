@@ -88,7 +88,7 @@ def main():
         result = service.spreadsheets().values().update(
             spreadsheetId=sheet_id,
             range=f"{sheet_name}!A1",
-            valueInputOption='RAW',
+            valueInputOption='USER_ENTERED',
             body={'values': values}
         ).execute()
         
