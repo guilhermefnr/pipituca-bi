@@ -267,7 +267,12 @@ def main():
     print(f"   • Usuários únicos: {df_final['NOME_USUARIO'].nunique():,}")
     print(f"   • Total de saídas: {df_final['QTD_SAIDA'].sum():,.0f} unidades")
     print(f"   • Colunas: {len(df_final.columns)}")
-    
+ 
+ # Forçar TAMANHO como texto (resolve P, M, G)
+    if 'TAMANHO' in df_final.columns:
+        df_final['TAMANHO'] = df_final['TAMANHO'].astype(str)
+        df_final['TAMANHO'] = "'" + df_final['TAMANHO'].fillna('')
+   
     # ============================================================================
     # 8. SALVAR CSV (para upload ao Sheets)
     # ============================================================================
