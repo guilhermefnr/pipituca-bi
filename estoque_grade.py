@@ -7,6 +7,7 @@ Mostra: 1 linha por grade com saldo calculado (entradas - saídas)
 TRATAMENTO ESPECIAL:
 - Produtos sem COD_GRADE recebem identificador único: {CODIGO_PRODUTO}_UNICO
 - Isso garante que cada produto seja contabilizado separadamente
+- Deduplicação de inclusões: Remove registros "INCLUSÃO DE PRODUTO" quando existe "INCLUSÃO DE GRADE" para o mesmo produto
 """
 import os
 import sys
@@ -80,9 +81,6 @@ def main():
     if linhas_removidas_balanco > 0:
         print(f"   🔍 Removidas {linhas_removidas_balanco:,} linhas com BALANÇO no histórico")
     
-    # Remover coluna HISTORICO (não é necessária no resultado final)
-    df_kardex = df_kardex.drop(columns=['HISTORICO'], errors='ignore')
-    
     # Filtrar apenas movimentações reais
     linhas_antes = len(df_kardex)
     df_kardex = df_kardex[(df_kardex['QTDE_ENTRADA'] > 0) | (df_kardex['QTDE_SAIDA'] > 0)]
@@ -101,7 +99,50 @@ def main():
         print(f"   🔧 Corrigidas {grades_vazias_antes:,} grades vazias (agora únicas por produto)")
     
     # ============================================================================
-    # 2. LER PRODUTOS
+    # 2. DEDUPLICAÇÃO DE INCLUSÕES (PRODUTO vs GRADE)
+    # ============================================================================
+    print(f"\n🔍 Verificando duplicações de inclusão...")
+    
+    # Identificar linhas de inclusão de produto (sem grade original)
+    mask_inclusao_produto = (
+        df_kardex['HISTORICO'].astype(str).str.upper().str.contains('INCLUSÃO DE PRODUTO', na=False) |
+        df_kardex['HISTORICO'].astype(str).str.upper().str.contains('INCLUSAO DE PRODUTO', na=False)
+    )
+    
+    # Identificar linhas de inclusão de grade
+    mask_inclusao_grade = (
+        df_kardex['HISTORICO'].astype(str).str.upper().str.contains('INCLUSÃO DE GRADE', na=False) |
+        df_kardex['HISTORICO'].astype(str).str.upper().str.contains('INCLUSAO DE GRADE', na=False)
+    )
+    
+    # Para cada CODIGO_PRODUTO, verificar se tem ambos os tipos
+    linhas_antes_dedup = len(df_kardex)
+    indices_remover = []
+    
+    for codigo_prod in df_kardex['CODIGO_PRODUTO'].unique():
+        mask_produto = df_kardex['CODIGO_PRODUTO'] == codigo_prod
+        
+        tem_inclusao_produto = (mask_produto & mask_inclusao_produto).any()
+        tem_inclusao_grade = (mask_produto & mask_inclusao_grade).any()
+        
+        # Se tem ambas, remover as linhas de "INCLUSÃO DE PRODUTO"
+        if tem_inclusao_produto and tem_inclusao_grade:
+            indices_produto = df_kardex[mask_produto & mask_inclusao_produto].index
+            indices_remover.extend(indices_produto.tolist())
+    
+    # Remover as linhas identificadas
+    if indices_remover:
+        df_kardex = df_kardex.drop(indices_remover)
+        linhas_removidas_dedup = linhas_antes_dedup - len(df_kardex)
+        print(f"   ✅ Removidas {linhas_removidas_dedup:,} duplicatas de inclusão (mantidas as com grade)")
+    else:
+        print(f"   ✅ Nenhuma duplicação de inclusão encontrada")
+    
+    # Remover coluna HISTORICO (não é mais necessária)
+    df_kardex = df_kardex.drop(columns=['HISTORICO'], errors='ignore')
+    
+    # ============================================================================
+    # 3. LER PRODUTOS
     # ============================================================================
     try:
         df_produtos = ler_tabela("""
@@ -115,7 +156,7 @@ def main():
         print("   ⚠️ PRODUTOS não disponível")
     
     # ============================================================================
-    # 3. LER TABELAS AUXILIARES
+    # 4. LER TABELAS AUXILIARES
     # ============================================================================
     try:
         df_grupos = ler_tabela("SELECT CODIGO, NOME_GRUPO FROM GRUPOS", "GRUPOS")
@@ -133,7 +174,7 @@ def main():
         df_subgrupo = None
     
     # ============================================================================
-    # 4. CONSOLIDAR POR GRADE
+    # 5. CONSOLIDAR POR GRADE
     # ============================================================================
     print(f"\n🔗 Consolidando por grade...")
     
@@ -176,7 +217,7 @@ def main():
     print(f"   ✅ {len(df_kardex):,} movimentações → {len(df_consolidado):,} grades únicas")
     
     # ============================================================================
-    # 5. ENRIQUECER COM DADOS DE PRODUTO
+    # 6. ENRIQUECER COM DADOS DE PRODUTO
     # ============================================================================
     if df_produtos is not None:
         # Preparar PRODUTOS com joins
@@ -222,7 +263,7 @@ def main():
         df_consolidado['VENDA_GRADE'] = 0
     
     # ============================================================================
-    # 6. ORGANIZAR COLUNAS FINAIS
+    # 7. ORGANIZAR COLUNAS FINAIS
     # ============================================================================
     colunas_finais = {
         'LOJA': 'LOJA',
@@ -249,7 +290,7 @@ def main():
     df_final = df_consolidado[colunas_existentes].rename(columns=colunas_finais)
     
     # ============================================================================
-    # 7. ESTATÍSTICAS
+    # 8. ESTATÍSTICAS
     # ============================================================================
     print(f"\n📊 Estatísticas:")
     print(f"   • Grades únicas: {len(df_final):,}")
@@ -267,13 +308,13 @@ def main():
     print(f"   • Saldo total: {df_final['SALDO_GRADE'].sum():,.0f} unidades")
     print(f"   • Colunas: {len(df_final.columns)}")
     
-        # Forçar COD_GRADE_TAMANHO como texto (resolve P, M, G)
+    # Forçar COD_GRADE_TAMANHO como texto (resolve P, M, G)
     if 'COD_GRADE_TAMANHO' in df_final.columns:
         df_final['COD_GRADE_TAMANHO'] = df_final['COD_GRADE_TAMANHO'].astype(str)
         df_final['COD_GRADE_TAMANHO'] = "'" + df_final['COD_GRADE_TAMANHO'].fillna('')
         
     # ============================================================================
-    # 8. SALVAR CSV (para upload ao Sheets)
+    # 9. SALVAR CSV (para upload ao Sheets)
     # ============================================================================
     csv_path = os.path.join(OUTPUT_DIR, "ESTOQUE_GRADE.csv")
     
