@@ -63,7 +63,17 @@ jobs:
           END_DATE:   ${{ inputs.end   || '' }}
         run: |
           mkdir -p output
-          python build_period_report.py ${START_DATE:+--start "$START_DATE"} ${END_DATE:+--end "$END_DATE"}
+          echo "=== Executando build_period_report.py ==="
+          set -o pipefail
+          python build_period_report.py ${START_DATE:+--start "$START_DATE"} ${END_DATE:+--end "$END_DATE"} 2>&1 | tee build_log.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "=== Exit code: $EXIT_CODE ==="
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "[ERRO] Script Python falhou com código $EXIT_CODE"
+            echo "=== Log completo ==="
+            cat build_log.txt
+            exit $EXIT_CODE
+          fi
           echo "=== Arquivos gerados ==="
           ls -la output || true
           
