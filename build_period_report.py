@@ -343,22 +343,44 @@ if __name__ == "__main__":
     )
 
     # ---------- Resumo por Vendedor (PERÍODO - para o Excel) ----------
-    # where_ped já é por DATA_VENDA; filtros de situação mantidos
-    where_vend = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA','VDA HOMOLOG')")
-    SQL_sellers = f"""
-        SELECT
-            COALESCE(NULLIF(TRIM(NOME_VENDEDOR), ''), 'Sem Vendedor') AS VENDEDOR,
-            SUM(COALESCE(VALOR_FINAL, 0)) AS TOTAL_LIQUIDO
-        FROM PEDIDOS
-        {where_vend}
-        GROUP BY 1
-        ORDER BY 2 DESC
-    """
-    vendedores = exec_sql(SQL_sellers)
-    if not vendedores.empty:
-        vendedores = vendedores.rename(columns={"VENDEDOR": "Vendedor", "TOTAL_LIQUIDO": "Total Líquido"})
+# Vendas brutas por vendedor
+where_vend = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA','VDA HOMOLOG')")
+SQL_sellers = f"""
+    SELECT
+        COALESCE(NULLIF(TRIM(NOME_VENDEDOR), ''), 'Sem Vendedor') AS VENDEDOR,
+        SUM(COALESCE(VALOR_FINAL, 0)) AS VENDA_BRUTA
+    FROM PEDIDOS
+    {where_vend}
+    GROUP BY 1
+"""
+vendedores = exec_sql(SQL_sellers)
+
+# Devoluções por vendedor
+where_dev_vend = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) = 'TROCA_MERC'")
+SQL_dev_sellers = f"""
+    SELECT
+        COALESCE(NULLIF(TRIM(NOME_VENDEDOR), ''), 'Sem Vendedor') AS VENDEDOR,
+        SUM(COALESCE(VALOR_FINAL, 0)) AS DEVOLUCOES
+    FROM PEDIDOS
+    {where_dev_vend}
+    GROUP BY 1
+"""
+vendedores_dev = exec_sql(SQL_dev_sellers)
+
+# Merge e cálculo da Venda Líquida
+if not vendedores.empty:
+    if not vendedores_dev.empty:
+        vendedores = vendedores.merge(vendedores_dev, on="VENDEDOR", how="left")
+        vendedores["DEVOLUCOES"] = vendedores["DEVOLUCOES"].fillna(0)
     else:
-        vendedores = pd.DataFrame(columns=["Vendedor", "Total Líquido"])
+        vendedores["DEVOLUCOES"] = 0
+    
+    vendedores["VENDA_LIQUIDA"] = vendedores["VENDA_BRUTA"] - vendedores["DEVOLUCOES"]
+    vendedores = vendedores[["VENDEDOR", "VENDA_LIQUIDA"]].rename(
+        columns={"VENDEDOR": "Vendedor", "VENDA_LIQUIDA": "Venda Líquida"}
+    ).sort_values("Venda Líquida", ascending=False).reset_index(drop=True)
+else:
+    vendedores = pd.DataFrame(columns=["Vendedor", "Venda Líquida"])
 
     # ---------- Fato diário por VENDEDOR (para CSV) ----------
     where_vend_day = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA','VDA HOMOLOG')")
@@ -509,7 +531,7 @@ if __name__ == "__main__":
         ws.cell(row=startrow, column=1, value="Resumo por Vendedor")
         vendedores.to_excel(writer, index=False, sheet_name=sheet, startrow=startrow)
         header_row_idx4 = startrow + 1
-        excel_number_formats(ws, header_row_idx4, vendedores, money_cols=["Total Líquido"], int_cols=[])
+        excel_number_formats(ws, header_row_idx4, vendedores, money_cols=["Venda Líquida"], int_cols=[])
 
     print(f"🧾 Excel gerado -> {xlsx_path}")
     print("🏁 Concluído.")
