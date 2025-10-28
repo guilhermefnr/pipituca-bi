@@ -383,21 +383,48 @@ if __name__ == "__main__":
         vendedores = pd.DataFrame(columns=["Vendedor", "Venda Líquida"])
 
     # ---------- Fato diário por VENDEDOR (para CSV) ----------
+    # CORREÇÃO: buscar vendas E devoluções por (Data, Vendedor)
     where_vend_day = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA','VDA HOMOLOG')")
     SQL_vendor_daily = f"""
         SELECT
-            CAST(DATA_VENDA AS DATE) AS DATA,  -- eixo: DATA_VENDA
+            CAST(DATA_VENDA AS DATE) AS DATA,
             COALESCE(NULLIF(TRIM(NOME_VENDEDOR), ''), 'Sem Vendedor') AS VENDEDOR,
-            SUM(COALESCE(VALOR_FINAL, 0)) AS TOTAL_LIQUIDO
+            SUM(COALESCE(VALOR_FINAL, 0)) AS VENDA_BRUTA
         FROM PEDIDOS
         {where_vend_day}
         GROUP BY 1, 2
         ORDER BY 1, 2
     """
     vendor_daily = exec_sql(SQL_vendor_daily)
+    
+    # Devoluções por (Data, Vendedor)
+    where_dev_vend_day = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) = 'TROCA_MERC'")
+    SQL_vendor_dev_daily = f"""
+        SELECT
+            CAST(DATA_VENDA AS DATE) AS DATA,
+            COALESCE(NULLIF(TRIM(NOME_VENDEDOR), ''), 'Sem Vendedor') AS VENDEDOR,
+            SUM(COALESCE(VALOR_FINAL, 0)) AS DEVOLUCOES
+        FROM PEDIDOS
+        {where_dev_vend_day}
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+    """
+    vendor_dev_daily = exec_sql(SQL_vendor_dev_daily)
+    
     if not vendor_daily.empty:
-        vendor_daily = vendor_daily.rename(
-            columns={"DATA": "Data", "VENDEDOR": "Vendedor", "TOTAL_LIQUIDO": "Total Líquido"}
+        # Merge vendas com devoluções
+        if not vendor_dev_daily.empty:
+            vendor_daily = vendor_daily.merge(vendor_dev_daily, on=["DATA", "VENDEDOR"], how="left")
+            vendor_daily["DEVOLUCOES"] = vendor_daily["DEVOLUCOES"].fillna(0)
+        else:
+            vendor_daily["DEVOLUCOES"] = 0
+        
+        # Calcula Venda Líquida
+        vendor_daily["VENDA_LIQUIDA"] = vendor_daily["VENDA_BRUTA"] - vendor_daily["DEVOLUCOES"]
+        
+        # Renomeia e seleciona colunas
+        vendor_daily = vendor_daily[["DATA", "VENDEDOR", "VENDA_LIQUIDA"]].rename(
+            columns={"DATA": "Data", "VENDEDOR": "Vendedor", "VENDA_LIQUIDA": "Venda Líquida"}
         )
         vendor_daily["Data"] = pd.to_datetime(vendor_daily["Data"]).dt.strftime("%Y-%m-%d")
         out_vendor = os.path.join(OUTPUT_DIR, "fato_vendas_vendedor_diario.csv")
