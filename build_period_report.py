@@ -343,44 +343,44 @@ if __name__ == "__main__":
     )
 
     # ---------- Resumo por Vendedor (PERÍODO - para o Excel) ----------
-# Vendas brutas por vendedor
-where_vend = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA','VDA HOMOLOG')")
-SQL_sellers = f"""
-    SELECT
-        COALESCE(NULLIF(TRIM(NOME_VENDEDOR), ''), 'Sem Vendedor') AS VENDEDOR,
-        SUM(COALESCE(VALOR_FINAL, 0)) AS VENDA_BRUTA
-    FROM PEDIDOS
-    {where_vend}
-    GROUP BY 1
-"""
-vendedores = exec_sql(SQL_sellers)
+    # Vendas brutas por vendedor
+    where_vend = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA','VDA HOMOLOG')")
+    SQL_sellers = f"""
+        SELECT
+            COALESCE(NULLIF(TRIM(NOME_VENDEDOR), ''), 'Sem Vendedor') AS VENDEDOR,
+            SUM(COALESCE(VALOR_FINAL, 0)) AS VENDA_BRUTA
+        FROM PEDIDOS
+        {where_vend}
+        GROUP BY 1
+    """
+    vendedores = exec_sql(SQL_sellers)
 
-# Devoluções por vendedor
-where_dev_vend = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) = 'TROCA_MERC'")
-SQL_dev_sellers = f"""
-    SELECT
-        COALESCE(NULLIF(TRIM(NOME_VENDEDOR), ''), 'Sem Vendedor') AS VENDEDOR,
-        SUM(COALESCE(VALOR_FINAL, 0)) AS DEVOLUCOES
-    FROM PEDIDOS
-    {where_dev_vend}
-    GROUP BY 1
-"""
-vendedores_dev = exec_sql(SQL_dev_sellers)
+    # Devoluções por vendedor
+    where_dev_vend = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) = 'TROCA_MERC'")
+    SQL_dev_sellers = f"""
+        SELECT
+            COALESCE(NULLIF(TRIM(NOME_VENDEDOR), ''), 'Sem Vendedor') AS VENDEDOR,
+            SUM(COALESCE(VALOR_FINAL, 0)) AS DEVOLUCOES
+        FROM PEDIDOS
+        {where_dev_vend}
+        GROUP BY 1
+    """
+    vendedores_dev = exec_sql(SQL_dev_sellers)
 
-# Merge e cálculo da Venda Líquida
-if not vendedores.empty:
-    if not vendedores_dev.empty:
-        vendedores = vendedores.merge(vendedores_dev, on="VENDEDOR", how="left")
-        vendedores["DEVOLUCOES"] = vendedores["DEVOLUCOES"].fillna(0)
+    # Merge e cálculo da Venda Líquida
+    if not vendedores.empty:
+        if not vendedores_dev.empty:
+            vendedores = vendedores.merge(vendedores_dev, on="VENDEDOR", how="left")
+            vendedores["DEVOLUCOES"] = vendedores["DEVOLUCOES"].fillna(0)
+        else:
+            vendedores["DEVOLUCOES"] = 0
+        
+        vendedores["VENDA_LIQUIDA"] = vendedores["VENDA_BRUTA"] - vendedores["DEVOLUCOES"]
+        vendedores = vendedores[["VENDEDOR", "VENDA_LIQUIDA"]].rename(
+            columns={"VENDEDOR": "Vendedor", "VENDA_LIQUIDA": "Venda Líquida"}
+        ).sort_values("Venda Líquida", ascending=False).reset_index(drop=True)
     else:
-        vendedores["DEVOLUCOES"] = 0
-    
-    vendedores["VENDA_LIQUIDA"] = vendedores["VENDA_BRUTA"] - vendedores["DEVOLUCOES"]
-    vendedores = vendedores[["VENDEDOR", "VENDA_LIQUIDA"]].rename(
-        columns={"VENDEDOR": "Vendedor", "VENDA_LIQUIDA": "Venda Líquida"}
-    ).sort_values("Venda Líquida", ascending=False).reset_index(drop=True)
-else:
-    vendedores = pd.DataFrame(columns=["Vendedor", "Venda Líquida"])
+        vendedores = pd.DataFrame(columns=["Vendedor", "Venda Líquida"])
 
     # ---------- Fato diário por VENDEDOR (para CSV) ----------
     where_vend_day = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA','VDA HOMOLOG')")
