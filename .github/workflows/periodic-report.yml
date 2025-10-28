@@ -63,10 +63,23 @@ jobs:
           END_DATE:   ${{ inputs.end   || '' }}
         run: |
           mkdir -p output
-          # Se o seu build_period_report.py já cria os CSVs, só chame-o:
           python build_period_report.py ${START_DATE:+--start "$START_DATE"} ${END_DATE:+--end "$END_DATE"}
           echo "=== Arquivos gerados ==="
           ls -la output || true
+          
+      - name: Verify CSV files exist
+        run: |
+          if [ ! -f "output/fato_vendas_diario.csv" ]; then
+            echo "[ERRO] Arquivo fato_vendas_diario.csv não foi gerado!"
+            exit 1
+          fi
+          if [ ! -f "output/fato_vendas_vendedor_diario.csv" ]; then
+            echo "[ERRO] Arquivo fato_vendas_vendedor_diario.csv não foi gerado!"
+            exit 1
+          fi
+          echo "[OK] Ambos os CSVs foram gerados com sucesso"
+          echo "=== Conteúdo dos arquivos ==="
+          wc -l output/*.csv
 
       - name: Write Google Service Account credentials
         run: |
