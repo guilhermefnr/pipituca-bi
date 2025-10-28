@@ -90,13 +90,42 @@ def excel_number_formats(ws, header_row_idx: int, df: pd.DataFrame, money_cols: 
 def append_dedup(df: pd.DataFrame, path: str, key_cols: list[str]):
     """Append com dedupe pelas chaves informadas."""
     df = df.copy()
+    
     # normaliza Data para string YYYY-MM-DD se existir
     for kc in key_cols:
         if kc.lower() == "data" and kc in df.columns:
             df[kc] = pd.to_datetime(df[kc]).dt.strftime("%Y-%m-%d")
+    
+    # Define colunas numéricas conhecidas
+    numeric_cols = [
+        "Total Líquido (A)", "Qtde. Produtos (B)", "Qtde. Pedidos (C)",
+        "Desconto", "Acréscimo", "Tot. Bruto", "Devoluções Venda", 
+        "Crédito Cliente", "Venda Líquida", "Vl. Médio Produto (D)", 
+        "Vl. Médio Pedido (E)"
+    ]
+    
+    # Garante que colunas numéricas no DataFrame novo sejam float
+    for col in df.columns:
+        if col in numeric_cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+    
     if os.path.exists(path):
-        old = pd.read_csv(path)
+        # Lê CSV antigo especificando dtype para colunas numéricas
+        dtype_spec = {col: float for col in numeric_cols}
+        old = pd.read_csv(path, dtype=dtype_spec)
+        
+        # Garante conversão de colunas numéricas no DataFrame antigo também
+        for col in old.columns:
+            if col in numeric_cols:
+                old[col] = pd.to_numeric(old[col], errors="coerce").fillna(0.0)
+        
         combo = pd.concat([old, df], ignore_index=True)
+        
+        # Garante tipos após o merge
+        for col in combo.columns:
+            if col in numeric_cols:
+                combo[col] = pd.to_numeric(combo[col], errors="coerce").fillna(0.0)
+        
         combo = combo.drop_duplicates(key_cols, keep="last")
         combo.to_csv(path, index=False, encoding="utf-8-sig")
     else:
