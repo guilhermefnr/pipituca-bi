@@ -77,6 +77,28 @@ def safe_div(num, den):
     except Exception:
         return 0.0
 
+def sanitize_numeric(value):
+    """Sanitiza um valor numérico individual."""
+    try:
+        val = float(value)
+        if pd.isna(val) or val == float('inf') or val == float('-inf'):
+            return 0.0
+        return round(val, 2)
+    except (ValueError, TypeError):
+        return 0.0
+
+def sanitize_numeric_df(df: pd.DataFrame, numeric_cols: list[str]) -> pd.DataFrame:
+    """Sanitiza e formata colunas numéricas para garantir consistência."""
+    df = df.copy()
+    for col in numeric_cols:
+        if col in df.columns:
+            # Converte para numérico, substitui inf/nan por 0, arredonda
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            df[col] = df[col].replace([float('inf'), float('-inf')], 0.0)
+            df[col] = df[col].fillna(0.0)
+            df[col] = df[col].round(2)
+    return df
+
 def excel_number_formats(ws, header_row_idx: int, df: pd.DataFrame, money_cols: list[str], int_cols: list[str]):
     for col_idx, col_name in enumerate(df.columns, start=1):
         xl_col = get_column_letter(col_idx)
@@ -94,7 +116,7 @@ def append_dedup(df: pd.DataFrame, path: str, key_cols: list[str]):
     # normaliza Data para string YYYY-MM-DD se existir
     for kc in key_cols:
         if kc.lower() == "data" and kc in df.columns:
-            df[kc] = pd.to_datetime(df[kc]).dt.strftime("%Y-%m-%d")
+            df[kc] = pd.to_datetime(df[kc], errors='coerce').dt.strftime("%Y-%m-%d")
     
     # Define colunas numéricas conhecidas
     numeric_cols = [
@@ -104,31 +126,32 @@ def append_dedup(df: pd.DataFrame, path: str, key_cols: list[str]):
         "Vl. Médio Pedido (E)"
     ]
     
-    # Garante que colunas numéricas no DataFrame novo sejam float
+    # Garante que colunas numéricas no DataFrame novo sejam float arredondadas
     for col in df.columns:
         if col in numeric_cols:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0).round(2)
     
     if os.path.exists(path):
-        # Lê CSV antigo SEM especificar dtype (para não falhar se tiver strings)
         old = pd.read_csv(path)
         
-        # Garante conversão de colunas numéricas no DataFrame antigo também
+        # Garante conversão no DataFrame antigo também
         for col in old.columns:
             if col in numeric_cols:
-                old[col] = pd.to_numeric(old[col], errors="coerce").fillna(0.0)
+                old[col] = pd.to_numeric(old[col], errors="coerce").fillna(0.0).round(2)
         
         combo = pd.concat([old, df], ignore_index=True)
         
         # Garante tipos após o merge
         for col in combo.columns:
             if col in numeric_cols:
-                combo[col] = pd.to_numeric(combo[col], errors="coerce").fillna(0.0)
+                combo[col] = pd.to_numeric(combo[col], errors="coerce").fillna(0.0).round(2)
         
         combo = combo.drop_duplicates(key_cols, keep="last")
-        combo.to_csv(path, index=False, encoding="utf-8-sig")
+        # SALVA COM FORMATO CONTROLADO - 2 casas decimais
+        combo.to_csv(path, index=False, encoding="utf-8-sig", float_format="%.2f")
     else:
-        df.to_csv(path, index=False, encoding="utf-8-sig")
+        # SALVA COM FORMATO CONTROLADO - 2 casas decimais
+        df.to_csv(path, index=False, encoding="utf-8-sig", float_format="%.2f")
 
 # ----------------- main -----------------
 if __name__ == "__main__":
@@ -137,11 +160,10 @@ if __name__ == "__main__":
     END_DATE = args.end
 
     # ---------- Detalhe Diário (PEDIDOS) ----------
-    # [Ajuste: usar DATA_VENDA como eixo de data]
     where_ped = build_where_date("PEDIDOS.DATA_VENDA", START_DATE, END_DATE)
     SQL_daily = f"""
         SELECT
-            CAST(PEDIDOS.DATA_VENDA AS DATE) AS DATA,  -- eixo: DATA_VENDA
+            CAST(PEDIDOS.DATA_VENDA AS DATE) AS DATA,
             SUM(CASE
                     WHEN UPPER(TRIM(PEDIDOS.SITUACAO)) IN ('VENDA SEPD', 'PEDIDO DE VENDA', 'VDA HOMOLOG')
                     THEN COALESCE(PEDIDOS.VALOR_FINAL, 0)
@@ -165,7 +187,6 @@ if __name__ == "__main__":
     df = exec_sql(SQL_daily)
 
     # ---------- Devoluções por dia (TROCA_MERC) ----------
-    # [Ajuste: alinhar eixo de data para DATA_VENDA]
     SQL_dev_day = f"""
         SELECT
             CAST(DATA_VENDA AS DATE) AS DATA,
@@ -179,7 +200,6 @@ if __name__ == "__main__":
     df_dev = exec_sql(SQL_dev_day)
 
     # ---------- Crédito Cliente por dia (MOVCAIXA) ----------
-    # Permanece por DATA_HORA do MOVCAIXA
     where_mov = build_where_date("MOVCAIXA.DATA_HORA", START_DATE, END_DATE)
     SQL_credit_day = f"""
         SELECT
@@ -291,7 +311,6 @@ if __name__ == "__main__":
     resumo["Tot. Bruto"] = resumo["Total Líquido (A)"] + resumo["Desconto"] - resumo["Acréscimo"]
 
     # ---------- Vendas Total do Período ----------
-    # Devoluções (TROCA_MERC) baseadas em VL_BRUTO (ajuste solicitado)
     SQL_devol = f"""
         SELECT
             SUM(CASE WHEN UPPER(TRIM(SITUACAO)) = 'TROCA_MERC'
@@ -342,14 +361,13 @@ if __name__ == "__main__":
     )
 
     # ---------- Totais por Tipo de Pagamento ----------
-    # crédito cliente já apurado por dia para o CSV; aqui usamos o total do período:
     credito_cliente_total = float(df["CREDITO_CLIENTE"].sum())
 
     vista_bruta = venda_bruta_total_liq - credito_cliente_total
     vista_dev = devolucoes["Total Líquido"]
     vista_liq = vista_bruta - vista_dev
 
-    prazo_bruta = prazo_dev = prazo_liq = 0.0  # placeholder (não há regra definida)
+    prazo_bruta = prazo_dev = prazo_liq = 0.0
     credito_bruta = credito_cliente_total
     credito_dev = 0.0
     credito_liq = credito_bruta
@@ -371,7 +389,6 @@ if __name__ == "__main__":
     )
 
     # ---------- Resumo por Vendedor (PERÍODO - para o Excel) ----------
-    # Vendas brutas por vendedor
     where_vend = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA','VDA HOMOLOG')")
     SQL_sellers = f"""
         SELECT
@@ -383,7 +400,6 @@ if __name__ == "__main__":
     """
     vendedores = exec_sql(SQL_sellers)
 
-    # Devoluções por vendedor
     where_dev_vend = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) = 'TROCA_MERC'")
     SQL_dev_sellers = f"""
         SELECT
@@ -395,7 +411,6 @@ if __name__ == "__main__":
     """
     vendedores_dev = exec_sql(SQL_dev_sellers)
 
-    # Merge e cálculo da Venda Líquida
     if not vendedores.empty:
         if not vendedores_dev.empty:
             vendedores = vendedores.merge(vendedores_dev, on="VENDEDOR", how="left")
@@ -411,7 +426,7 @@ if __name__ == "__main__":
         vendedores = pd.DataFrame(columns=["Vendedor", "Venda Líquida"])
 
     # ---------- Fato diário por VENDEDOR (para CSV) ----------
-    # CORREÇÃO: buscar vendas E devoluções por (Data, Vendedor)
+    # Vendas por (Data, Vendedor)
     where_vend_day = where_plus(where_ped, "UPPER(TRIM(SITUACAO)) IN ('VENDA SEPD','PEDIDO DE VENDA','VDA HOMOLOG')")
     SQL_vendor_daily = f"""
         SELECT
@@ -450,17 +465,20 @@ if __name__ == "__main__":
         # Calcula Venda Líquida
         vendor_daily["VENDA_LIQUIDA"] = vendor_daily["VENDA_BRUTA"] - vendor_daily["DEVOLUCOES"]
         
-        # FORÇA tipo numérico ANTES de renomear
-        vendor_daily["VENDA_BRUTA"] = pd.to_numeric(vendor_daily["VENDA_BRUTA"], errors="coerce").fillna(0.0)
-        vendor_daily["DEVOLUCOES"] = pd.to_numeric(vendor_daily["DEVOLUCOES"], errors="coerce").fillna(0.0)
-        vendor_daily["VENDA_LIQUIDA"] = pd.to_numeric(vendor_daily["VENDA_LIQUIDA"], errors="coerce").fillna(0.0)
-        vendor_daily["VENDA_LIQUIDA"] = vendor_daily["VENDA_LIQUIDA"].round(2)
+        # SANITIZA todas as colunas numéricas antes de renomear
+        vendor_daily = sanitize_numeric_df(
+            vendor_daily, 
+            ["VENDA_BRUTA", "DEVOLUCOES", "VENDA_LIQUIDA"]
+        )
         
-        # Renomeia e seleciona colunas
+        # Renomeia e seleciona apenas a coluna Venda Líquida
         vendor_daily = vendor_daily[["DATA", "VENDEDOR", "VENDA_LIQUIDA"]].rename(
             columns={"DATA": "Data", "VENDEDOR": "Vendedor", "VENDA_LIQUIDA": "Venda Líquida"}
         )
+        
+        # Converte Data para string
         vendor_daily["Data"] = pd.to_datetime(vendor_daily["Data"]).dt.strftime("%Y-%m-%d")
+        
         out_vendor = os.path.join(OUTPUT_DIR, "fato_vendas_vendedor_diario.csv")
         append_dedup(vendor_daily, out_vendor, key_cols=["Data", "Vendedor"])
         print(f"🟢 Atualizado: {out_vendor}")
@@ -469,7 +487,6 @@ if __name__ == "__main__":
 
     # ---------- Escrita do CSV diário principal (para o Looker) ----------
     fato_daily = detalhe.copy()
-    # ordena colunas principais (mantendo as métricas novas)
     cols_order = [
         "Data",
         "Dia da Semana",
@@ -483,6 +500,17 @@ if __name__ == "__main__":
         "Crédito Cliente",
     ]
     fato_daily = fato_daily[cols_order]
+    
+    # SANITIZA dados numéricos
+    numeric_cols_daily = [
+        "Total Líquido (A)", "Qtde. Produtos (B)", "Qtde. Pedidos (C)",
+        "Desconto", "Acréscimo", "Tot. Bruto", "Devoluções Venda", "Crédito Cliente"
+    ]
+    fato_daily = sanitize_numeric_df(fato_daily, numeric_cols_daily)
+    
+    # Converte Data para string YYYY-MM-DD
+    fato_daily["Data"] = pd.to_datetime(fato_daily["Data"]).dt.strftime("%Y-%m-%d")
+    
     out_fact = os.path.join(OUTPUT_DIR, "fato_vendas_diario.csv")
     append_dedup(fato_daily, out_fact, key_cols=["Data"])
     print(f"🟢 Atualizado: {out_fact}")
@@ -583,7 +611,6 @@ if __name__ == "__main__":
         # Contadores
         startrow = header_row_idx3 + len(tipos_pagto) + 3
         contadores.to_excel(writer, index=False, sheet_name=sheet, startrow=startrow)
-        # Formatar coluna Qtde
         for r in range(startrow + 1, startrow + 1 + len(contadores)):
             ws[f"B{r}"].number_format = "0"
 
