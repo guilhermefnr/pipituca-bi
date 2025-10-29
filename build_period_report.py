@@ -451,6 +451,11 @@ if __name__ == "__main__":
         # Calcula Venda Líquida
         vendor_daily["VENDA_LIQUIDA"] = vendor_daily["VENDA_BRUTA"] - vendor_daily["DEVOLUCOES"]
         
+        # FORÇA tipo numérico ANTES de renomear
+        vendor_daily["VENDA_BRUTA"] = pd.to_numeric(vendor_daily["VENDA_BRUTA"], errors="coerce").fillna(0.0)
+        vendor_daily["DEVOLUCOES"] = pd.to_numeric(vendor_daily["DEVOLUCOES"], errors="coerce").fillna(0.0)
+        vendor_daily["VENDA_LIQUIDA"] = pd.to_numeric(vendor_daily["VENDA_LIQUIDA"], errors="coerce").fillna(0.0)
+        
         # Renomeia e seleciona colunas
         vendor_daily = vendor_daily[["DATA", "VENDEDOR", "VENDA_LIQUIDA"]].rename(
             columns={"DATA": "Data", "VENDEDOR": "Vendedor", "VENDA_LIQUIDA": "Venda Líquida"}
