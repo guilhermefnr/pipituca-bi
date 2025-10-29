@@ -38,6 +38,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # libs do upload p/ Google Drive (service account)
           pip install packaging google-api-python-client google-auth-httplib2 google-auth-oauthlib
 
       - name: Create .env for the app
@@ -51,13 +52,21 @@ jobs:
           FB_CHARSET=${{ secrets.SYNDATA_CHARSET }}
           ENV
 
-      - name: Run period report
+      - name: Show .env (masked)
+        run: |
+          echo "==== .env (mascarado pelo GitHub) ===="
+          cat .env
+
+      - name: Run period report (generates the two CSVs)
         env:
           START_DATE: ${{ inputs.start || '' }}
           END_DATE:   ${{ inputs.end   || '' }}
         run: |
           mkdir -p output
+          # Se o seu build_period_report.py já cria os CSVs, só chame-o:
           python build_period_report.py ${START_DATE:+--start "$START_DATE"} ${END_DATE:+--end "$END_DATE"}
+          echo "=== Arquivos gerados ==="
+          ls -la output || true
 
       - name: Write Google Service Account credentials
         run: |
@@ -70,7 +79,7 @@ jobs:
           FILE_ID_SELLERS: ${{ secrets.DRIVE_FILE_ID_FACT_VENDOR }}
         run: |
           python - <<'PY'
-          import os, sys
+          import os, io, sys
           from google.oauth2 import service_account
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
@@ -95,6 +104,7 @@ jobs:
               print(f"[OK] Atualizado por fileId: {file_id} <- {path}")
           PY
 
+      # ===== NOVO PASSO: Atualiza também as Google Sheets =====
       - name: Sync CSVs to Google Sheets
         env:
           GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/google_sa.json
@@ -116,11 +126,13 @@ jobs:
           sheets = build("sheets", "v4", credentials=creds)
 
           def upload_csv_to_sheet(csv_path, spreadsheet_id, sheet_name):
+              # lê CSV
               with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
                   rows = list(csv.reader(f))
               if not rows:
                   rows = [["(vazio)"]]
 
+              # garante a aba (cria se não existir)
               ss = sheets.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
               titles = [s["properties"]["title"] for s in ss.get("sheets", [])]
               if sheet_name not in titles:
@@ -129,6 +141,7 @@ jobs:
                       body={"requests": [{"addSheet": {"properties": {"title": sheet_name}}}]},
                   ).execute()
 
+              # limpa e escreve tudo
               sheets.spreadsheets().values().clear(
                   spreadsheetId=spreadsheet_id, range=sheet_name
               ).execute()
