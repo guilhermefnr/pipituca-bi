@@ -110,9 +110,8 @@ def append_dedup(df: pd.DataFrame, path: str, key_cols: list[str]):
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
     
     if os.path.exists(path):
-        # Lê CSV antigo especificando dtype para colunas numéricas
-        dtype_spec = {col: float for col in numeric_cols}
-        old = pd.read_csv(path, dtype=dtype_spec)
+        # Lê CSV antigo SEM especificar dtype (para não falhar se tiver strings)
+        old = pd.read_csv(path)
         
         # Garante conversão de colunas numéricas no DataFrame antigo também
         for col in old.columns:
