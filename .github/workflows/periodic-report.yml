@@ -135,7 +135,7 @@ jobs:
               sheets.spreadsheets().values().update(
                   spreadsheetId=spreadsheet_id,
                   range=sheet_name,
-                  valueInputOption="RAW",
+                  valueInputOption="USER_ENTERED",,
                   body={"values": rows},
               ).execute()
               print(f"[OK] Planilha atualizada: {sheet_name} <- {csv_path}")
