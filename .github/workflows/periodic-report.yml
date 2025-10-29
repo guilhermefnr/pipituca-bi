@@ -117,9 +117,37 @@ jobs:
 
           def upload_csv_to_sheet(csv_path, spreadsheet_id, sheet_name):
               with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
-                  rows = list(csv.reader(f))
+                  reader = csv.reader(f)
+                  rows = list(reader)
+              
               if not rows:
                   rows = [["(vazio)"]]
+              else:
+                  # Converte coluna "Venda Líquida" para float
+                  header = rows[0]
+                  venda_liq_idx = None
+                  
+                  # Encontra o índice da coluna "Venda Líquida"
+                  for idx, col in enumerate(header):
+                      if col.strip().lower() == "venda líquida":
+                          venda_liq_idx = idx
+                          break
+                  
+                  # Converte valores numéricos
+                  if venda_liq_idx is not None:
+                      typed_rows = [header]
+                      for row in rows[1:]:
+                          new_row = []
+                          for idx, cell in enumerate(row):
+                              if idx == venda_liq_idx:
+                                  try:
+                                      new_row.append(float(cell))
+                                  except:
+                                      new_row.append(cell)
+                              else:
+                                  new_row.append(cell)
+                          typed_rows.append(new_row)
+                      rows = typed_rows
 
               ss = sheets.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
               titles = [s["properties"]["title"] for s in ss.get("sheets", [])]
@@ -132,10 +160,11 @@ jobs:
               sheets.spreadsheets().values().clear(
                   spreadsheetId=spreadsheet_id, range=sheet_name
               ).execute()
+              
               sheets.spreadsheets().values().update(
                   spreadsheetId=spreadsheet_id,
                   range=sheet_name,
-                  valueInputOption="USER_ENTERED",
+                  valueInputOption="RAW",
                   body={"values": rows},
               ).execute()
               print(f"[OK] Planilha atualizada: {sheet_name} <- {csv_path}")
