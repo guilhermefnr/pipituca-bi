@@ -123,31 +123,29 @@ jobs:
               if not rows:
                   rows = [["(vazio)"]]
               else:
-                  # Converte coluna "Venda Líquida" para float
                   header = rows[0]
-                  venda_liq_idx = None
+                  typed_rows = [header]
                   
-                  # Encontra o índice da coluna "Venda Líquida"
+                  # Identifica colunas que devem ficar como texto
+                  text_columns = set()
                   for idx, col in enumerate(header):
-                      if col.strip().lower() == "venda líquida":
-                          venda_liq_idx = idx
-                          break
+                      col_lower = col.strip().lower()
+                      if col_lower in ["data", "vendedor", "dia da semana"]:
+                          text_columns.add(idx)
                   
-                  # Converte valores numéricos
-                  if venda_liq_idx is not None:
-                      typed_rows = [header]
-                      for row in rows[1:]:
-                          new_row = []
-                          for idx, cell in enumerate(row):
-                              if idx == venda_liq_idx:
-                                  try:
-                                      new_row.append(float(cell))
-                                  except:
-                                      new_row.append(cell)
-                              else:
+                  # Converte todas as outras colunas para float (se possível)
+                  for row in rows[1:]:
+                      new_row = []
+                      for idx, cell in enumerate(row):
+                          if idx in text_columns:
+                              new_row.append(cell)
+                          else:
+                              try:
+                                  new_row.append(float(cell))
+                              except:
                                   new_row.append(cell)
-                          typed_rows.append(new_row)
-                      rows = typed_rows
+                      typed_rows.append(new_row)
+                  rows = typed_rows
 
               ss = sheets.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
               titles = [s["properties"]["title"] for s in ss.get("sheets", [])]
