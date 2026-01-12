@@ -1,7 +1,13 @@
 """
-Relatório de Saídas por Grade - Vendas e Retiradas
+Relatório de Saídas por Grade - Vendas e Retiradas (COM CARGA INCREMENTAL)
 Base: KARDEX filtrado por tipo de movimento (VENDA e RETIRADA)
 Mostra: 1 linha por grade/data/usuário com total de saídas
+
+MODO INCREMENTAL:
+- Mantém arquivo de controle com última execução (.last_run)
+- Busca apenas registros desde a última execução
+- Faz UPSERT no CSV existente (atualiza ou insere)
+- Força carga completa via flag --full ou se não houver histórico
 
 IMPORTANTE:
 - Filtra movimentações do HISTORICO que contenham "VENDA" ou "RETIRADA"
@@ -10,10 +16,12 @@ IMPORTANTE:
 """
 import os
 import sys
+import argparse
 import pandas as pd
 import firebirdsql
 import config
-from datetime import datetime
+from datetime import datetime, timedelta
+import json
 
 pd.set_option("display.max_columns", None)
 pd.set_option("display.width", 2000)
@@ -21,7 +29,24 @@ pd.set_option("display.width", 2000)
 OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# Arquivos de controle e saída
+LAST_RUN_FILE = os.path.join(OUTPUT_DIR, ".saida_grade_last_run.json")
+CSV_PATH = os.path.join(OUTPUT_DIR, "SAIDA_GRADE.csv")
+
+# Janela de segurança: buscar dados desde X horas antes da última execução
+SAFETY_WINDOW_HOURS = 2
+
 CHARSETS = ["UTF8", "WIN1252", "ISO8859_1", "DOS850"]
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Relatório de Saídas por Grade (Incremental)')
+    parser.add_argument('--full', action='store_true', 
+                        help='Força carga completa (ignora incremental)')
+    parser.add_argument('--days', type=int, default=None,
+                        help='Busca apenas os últimos N dias')
+    return parser.parse_args()
+
 
 def conectar(charset):
     return firebirdsql.connect(
@@ -32,6 +57,7 @@ def conectar(charset):
         password=config.DB_PASSWORD,
         charset=charset,
     )
+
 
 def ler_tabela(sql, nome_tabela):
     print(f"\n📊 Lendo {nome_tabela}...", end=" ", flush=True)
@@ -51,17 +77,42 @@ def ler_tabela(sql, nome_tabela):
     
     raise Exception(f"Falhou ao ler {nome_tabela}")
 
-def main():
-    inicio = datetime.now()
-    
-    print("=" * 80)
-    print("🛒 RELATÓRIO DE SAÍDAS POR GRADE (VENDAS E RETIRADAS)")
-    print("=" * 80)
-    
-    # ============================================================================
-    # 1. LER KARDEX COMPLETO
-    # ============================================================================
-    df_kardex = ler_tabela("""
+
+def get_last_run_info():
+    """Lê informações da última execução"""
+    if os.path.exists(LAST_RUN_FILE):
+        try:
+            with open(LAST_RUN_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return None
+
+
+def save_last_run_info(info):
+    """Salva informações da execução atual"""
+    with open(LAST_RUN_FILE, 'w') as f:
+        json.dump(info, f, indent=2, default=str)
+
+
+def load_existing_data():
+    """Carrega dados existentes do CSV"""
+    if os.path.exists(CSV_PATH):
+        try:
+            df = pd.read_csv(CSV_PATH, dtype={'TAMANHO': str})
+            # Remove o prefixo de apóstrofo do TAMANHO para poder fazer merge
+            if 'TAMANHO' in df.columns:
+                df['TAMANHO'] = df['TAMANHO'].str.lstrip("'")
+            print(f"   📂 CSV existente: {len(df):,} linhas")
+            return df
+        except Exception as e:
+            print(f"   ⚠️ Erro ao ler CSV existente: {e}")
+    return None
+
+
+def build_kardex_query(data_corte=None, dias=None):
+    """Constrói a query do KARDEX com filtros opcionais"""
+    base_query = """
         SELECT 
             LOJA, CODIGO_PRODUTO, COD_GRADE, DESCRICAO,
             QTDE_SAIDA, TIPO,
@@ -69,7 +120,121 @@ def main():
             HISTORICO, NOME_USUARIO,
             DATA_MOVIMENTO, HORA_MOVIMENTO
         FROM KARDEX
-    """, "KARDEX")
+    """
+    
+    conditions = []
+    
+    if data_corte:
+        data_str = data_corte.strftime('%Y-%m-%d')
+        conditions.append(f"DATA_MOVIMENTO >= '{data_str}'")
+    
+    if dias:
+        data_inicio = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
+        conditions.append(f"DATA_MOVIMENTO >= '{data_inicio}'")
+    
+    if conditions:
+        base_query += " WHERE " + " AND ".join(conditions)
+    
+    return base_query
+
+
+def merge_dataframes(df_existing, df_new):
+    """
+    Faz merge (upsert) dos dados novos com os existentes.
+    Chave: COD_GRADE + DATA_MOVIMENTO + NOME_USUARIO
+    """
+    if df_existing is None or len(df_existing) == 0:
+        return df_new
+    
+    if df_new is None or len(df_new) == 0:
+        return df_existing
+    
+    print(f"\n🔄 Fazendo merge dos dados...")
+    print(f"   📂 Existentes: {len(df_existing):,} linhas")
+    print(f"   🆕 Novos: {len(df_new):,} linhas")
+    
+    key_cols = ['COD_GRADE', 'DATA_MOVIMENTO', 'NOME_USUARIO']
+    
+    # Garantir que ambos têm as mesmas colunas
+    all_cols = list(set(df_existing.columns) | set(df_new.columns))
+    
+    for col in all_cols:
+        if col not in df_existing.columns:
+            df_existing[col] = None
+        if col not in df_new.columns:
+            df_new[col] = None
+    
+    # Criar coluna de chave para identificação
+    df_existing['_key'] = df_existing[key_cols].astype(str).agg('|'.join, axis=1)
+    df_new['_key'] = df_new[key_cols].astype(str).agg('|'.join, axis=1)
+    
+    # Separar registros existentes que NÃO serão atualizados
+    keys_to_update = set(df_new['_key'])
+    df_keep = df_existing[~df_existing['_key'].isin(keys_to_update)].copy()
+    
+    # Contar atualizações vs inserções
+    keys_existing = set(df_existing['_key'])
+    keys_new = set(df_new['_key'])
+    updates = len(keys_existing & keys_new)
+    inserts = len(keys_new - keys_existing)
+    
+    print(f"   📝 Atualizações: {updates:,}")
+    print(f"   ➕ Inserções: {inserts:,}")
+    
+    # Combinar: registros mantidos + novos/atualizados
+    df_merged = pd.concat([df_keep, df_new], ignore_index=True)
+    
+    # Remover coluna auxiliar
+    df_merged = df_merged.drop(columns=['_key'], errors='ignore')
+    
+    print(f"   ✅ Total após merge: {len(df_merged):,} linhas")
+    
+    return df_merged
+
+
+def main():
+    args = parse_args()
+    inicio = datetime.now()
+    
+    print("=" * 80)
+    print("🛒 RELATÓRIO DE SAÍDAS POR GRADE (VENDAS E RETIRADAS)")
+    print("=" * 80)
+    
+    # Determinar modo de execução
+    last_run = get_last_run_info()
+    is_incremental = False
+    data_corte = None
+    
+    if args.full:
+        print("\n⚡ MODO: Carga COMPLETA (--full)")
+    elif args.days:
+        print(f"\n⚡ MODO: Últimos {args.days} dias (--days)")
+    elif last_run and os.path.exists(CSV_PATH):
+        is_incremental = True
+        last_run_time = datetime.fromisoformat(last_run['timestamp'])
+        data_corte = last_run_time - timedelta(hours=SAFETY_WINDOW_HOURS)
+        print(f"\n⚡ MODO: INCREMENTAL")
+        print(f"   📅 Última execução: {last_run['timestamp']}")
+        print(f"   📅 Buscando desde: {data_corte.isoformat()} (janela de {SAFETY_WINDOW_HOURS}h)")
+    else:
+        print("\n⚡ MODO: Carga COMPLETA (primeira execução)")
+    
+    # ============================================================================
+    # 1. LER KARDEX (com filtro se incremental)
+    # ============================================================================
+    query = build_kardex_query(data_corte=data_corte, dias=args.days)
+    df_kardex = ler_tabela(query, "KARDEX")
+    
+    if len(df_kardex) == 0:
+        print("\n⚠️ Nenhum registro encontrado no período")
+        if is_incremental:
+            print("   Mantendo dados existentes...")
+            save_last_run_info({
+                'timestamp': inicio.isoformat(),
+                'mode': 'incremental',
+                'records_processed': 0
+            })
+        return
     
     # Tratar COD_GRADE vazio - preencher com identificador único por produto
     grades_vazias_antes = df_kardex['COD_GRADE'].isna().sum() + (df_kardex['COD_GRADE'] == '').sum()
@@ -88,27 +253,35 @@ def main():
     # ============================================================================
     print(f"\n🔍 Filtrando SAÍDAS (VENDAS e RETIRADAS) do kardex...")
     
-    # Filtrar registros que são VENDAS ou RETIRADAS
     df_saidas = df_kardex[
         df_kardex['HISTORICO'].astype(str).str.upper().str.contains('VENDA|RETIRADA', na=False)
     ].copy()
     
     print(f"   ✅ {len(df_saidas):,} movimentações de saída encontradas")
     
+    if len(df_saidas) == 0:
+        print("\n⚠️ Nenhuma saída encontrada no período")
+        if is_incremental:
+            save_last_run_info({
+                'timestamp': inicio.isoformat(),
+                'mode': 'incremental',
+                'records_processed': 0
+            })
+        return
+    
     # ============================================================================
     # 3. AGRUPAR POR GRADE + DATA + USUARIO
     # ============================================================================
     print(f"\n📦 Agrupando por COD_GRADE + DATA_MOVIMENTO + NOME_USUARIO...")
     
-    # Consolidar saídas por grade/data/usuário
     df_consolidado = df_saidas.groupby(['COD_GRADE', 'DATA_MOVIMENTO', 'NOME_USUARIO']).agg({
         'LOJA': 'first',
         'CODIGO_PRODUTO': 'first',
         'DESCRICAO': 'first',
-        'QTDE_SAIDA': 'sum',  # SOMA todas as saídas (VENDA + RETIRADA)
+        'QTDE_SAIDA': 'sum',
         'COD_GRADE_COR': 'first',
         'COD_GRADE_TAMANHO': 'first',
-        'HORA_MOVIMENTO': 'first'  # Primeira hora do dia
+        'HORA_MOVIMENTO': 'first'
     }).reset_index()
     
     df_consolidado = df_consolidado.rename(columns={'QTDE_SAIDA': 'QTD_SAIDA'})
@@ -130,7 +303,6 @@ def main():
         df_produtos = None
         print("   ⚠️ PRODUTOS não disponível")
     
-    # Ler tabelas auxiliares
     try:
         df_grupos = ler_tabela("SELECT CODIGO, NOME_GRUPO FROM GRUPOS", "GRUPOS")
     except:
@@ -146,11 +318,9 @@ def main():
     except:
         df_subgrupo = None
     
-    # Enriquecer com dados de produto
     if df_produtos is not None:
         print(f"\n🔗 Enriquecendo com dados de produto...")
         
-        # Preparar PRODUTOS com joins
         if df_grupos is not None:
             df_grupos['CODIGO'] = df_grupos['CODIGO'].astype(str)
             df_produtos['GRUPO'] = df_produtos['GRUPO'].astype(str)
@@ -171,7 +341,6 @@ def main():
             if 'DESCRICAO' in df_produtos.columns:
                 df_produtos = df_produtos.rename(columns={'DESCRICAO': 'SUBGRUPO_DESC'})
         
-        # JOIN com consolidado
         df_consolidado['CODIGO_PRODUTO'] = df_consolidado['CODIGO_PRODUTO'].astype(str)
         df_produtos['REFERENCIA'] = df_produtos['REFERENCIA'].astype(str)
         
@@ -188,7 +357,6 @@ def main():
     # ============================================================================
     print(f"\n📊 Calculando métricas...")
     
-    # Calcular MKP (Markup = Preço Venda / Preço Custo)
     if 'PRECO_VEND' in df_consolidado.columns and 'PRECO_CUST' in df_consolidado.columns:
         df_consolidado['MKP'] = df_consolidado.apply(
             lambda row: row['PRECO_VEND'] / row['PRECO_CUST'] 
@@ -200,25 +368,21 @@ def main():
     else:
         df_consolidado['MKP'] = 0
     
-    # Calcular FATURAMENTO = QTD_SAIDA × PRECO_VENDA
     if 'PRECO_VEND' in df_consolidado.columns:
         df_consolidado['FATURAMENTO'] = (df_consolidado['QTD_SAIDA'] * df_consolidado['PRECO_VEND'].fillna(0)).round(2)
         print(f"   ✅ Faturamento total: R$ {df_consolidado['FATURAMENTO'].sum():,.2f}")
     else:
         df_consolidado['FATURAMENTO'] = 0
     
-    # Calcular CUSTO_TOTAL = QTD_SAIDA × PRECO_CUSTO
     if 'PRECO_CUST' in df_consolidado.columns:
         df_consolidado['CUSTO_TOTAL'] = (df_consolidado['QTD_SAIDA'] * df_consolidado['PRECO_CUST'].fillna(0)).round(2)
         print(f"   ✅ Custo total: R$ {df_consolidado['CUSTO_TOTAL'].sum():,.2f}")
     else:
         df_consolidado['CUSTO_TOTAL'] = 0
     
-    # Calcular LUCRO_BRUTO = FATURAMENTO - CUSTO_TOTAL
     df_consolidado['LUCRO_BRUTO'] = (df_consolidado['FATURAMENTO'] - df_consolidado['CUSTO_TOTAL']).round(2)
     print(f"   ✅ Lucro bruto total: R$ {df_consolidado['LUCRO_BRUTO'].sum():,.2f}")
     
-    # Calcular MARGEM_BRUTA = (FATURAMENTO / CUSTO_TOTAL)
     df_consolidado['MARGEM_BRUTA'] = df_consolidado.apply(
         lambda row: ((row['FATURAMENTO'] / row['CUSTO_TOTAL'])) 
                     if row['CUSTO_TOTAL'] > 0 
@@ -255,10 +419,19 @@ def main():
     }
     
     colunas_existentes = [col for col in colunas_finais.keys() if col in df_consolidado.columns]
-    df_final = df_consolidado[colunas_existentes].rename(columns=colunas_finais)
+    df_new = df_consolidado[colunas_existentes].rename(columns=colunas_finais)
     
     # ============================================================================
-    # 7. ESTATÍSTICAS
+    # 7. MERGE COM DADOS EXISTENTES (se incremental)
+    # ============================================================================
+    if is_incremental:
+        df_existing = load_existing_data()
+        df_final = merge_dataframes(df_existing, df_new)
+    else:
+        df_final = df_new
+    
+    # ============================================================================
+    # 8. ESTATÍSTICAS
     # ============================================================================
     print(f"\n📊 Estatísticas:")
     print(f"   • Total de linhas: {len(df_final):,}")
@@ -268,22 +441,20 @@ def main():
     print(f"   • Total de saídas: {df_final['QTD_SAIDA'].sum():,.0f} unidades")
     print(f"   • Colunas: {len(df_final.columns)}")
  
- # Forçar TAMANHO como texto (resolve P, M, G)
+    # Forçar TAMANHO como texto (resolve P, M, G)
     if 'TAMANHO' in df_final.columns:
         df_final['TAMANHO'] = df_final['TAMANHO'].astype(str)
         df_final['TAMANHO'] = "'" + df_final['TAMANHO'].fillna('')
    
     # ============================================================================
-    # 8. SALVAR CSV (para upload ao Sheets)
+    # 9. SALVAR CSV (para upload ao Sheets)
     # ============================================================================
-    csv_path = os.path.join(OUTPUT_DIR, "SAIDA_GRADE.csv")
-    
-    print(f"\n💾 Salvando {csv_path}...", end=" ", flush=True)
+    print(f"\n💾 Salvando {CSV_PATH}...", end=" ", flush=True)
     
     try:
-        df_final.to_csv(csv_path, index=False, encoding='utf-8')
+        df_final.to_csv(CSV_PATH, index=False, encoding='utf-8')
         
-        tamanho_mb = os.path.getsize(csv_path) / (1024 * 1024)
+        tamanho_mb = os.path.getsize(CSV_PATH) / (1024 * 1024)
         duracao = (datetime.now() - inicio).total_seconds()
         
         print(f"✅ {tamanho_mb:.2f} MB em {duracao:.1f}s")
@@ -295,9 +466,21 @@ def main():
         print(f"\n❌ Erro: {e}")
         sys.exit(1)
     
+    # ============================================================================
+    # 10. SALVAR INFO DE EXECUÇÃO
+    # ============================================================================
+    save_last_run_info({
+        'timestamp': inicio.isoformat(),
+        'mode': 'incremental' if is_incremental else 'full',
+        'records_processed': len(df_new),
+        'total_records': len(df_final),
+        'duration_seconds': duracao
+    })
+    
     print("\n" + "=" * 80)
     print(f"🏁 {len(df_final):,} linhas de saída processadas")
     print("=" * 80)
+
 
 if __name__ == "__main__":
     try:
