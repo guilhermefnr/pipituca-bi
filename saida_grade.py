@@ -8,6 +8,7 @@ MODO INCREMENTAL:
 - Busca apenas registros desde a última execução
 - Faz UPSERT no CSV existente (atualiza ou insere)
 - Força carga completa via flag --full ou se não houver histórico
+- Cacheia tabelas auxiliares (PRODUTOS, GRUPOS, MARCAS, SUBGRUPO)
 
 IMPORTANTE:
 - Filtra movimentações do HISTORICO que contenham "VENDA" ou "RETIRADA"
@@ -32,6 +33,12 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # Arquivos de controle e saída
 LAST_RUN_FILE = os.path.join(OUTPUT_DIR, ".saida_grade_last_run.json")
 CSV_PATH = os.path.join(OUTPUT_DIR, "SAIDA_GRADE.csv")
+
+# Arquivos de cache para tabelas auxiliares
+CACHE_PRODUTOS = os.path.join(OUTPUT_DIR, ".cache_produtos.json")
+CACHE_GRUPOS = os.path.join(OUTPUT_DIR, ".cache_grupos.json")
+CACHE_MARCAS = os.path.join(OUTPUT_DIR, ".cache_marcas.json")
+CACHE_SUBGRUPO = os.path.join(OUTPUT_DIR, ".cache_subgrupo.json")
 
 # Janela de segurança: buscar dados desde X horas antes da última execução
 SAFETY_WINDOW_HOURS = 2
@@ -76,6 +83,26 @@ def ler_tabela(sql, nome_tabela):
             continue
     
     raise Exception(f"Falhou ao ler {nome_tabela}")
+
+
+def save_cache(df, cache_path):
+    """Salva DataFrame em cache JSON"""
+    try:
+        df.to_json(cache_path, orient='records', date_format='iso')
+    except Exception as e:
+        print(f"   ⚠️ Erro ao salvar cache: {e}")
+
+
+def load_cache(cache_path, nome_tabela):
+    """Carrega DataFrame do cache JSON"""
+    if os.path.exists(cache_path):
+        try:
+            df = pd.read_json(cache_path, orient='records')
+            print(f"\n📦 Cache {nome_tabela}... ✅ {len(df):,} linhas")
+            return df
+        except Exception as e:
+            print(f"\n⚠️ Erro ao ler cache {nome_tabela}: {e}")
+    return None
 
 
 def get_last_run_info():
@@ -204,6 +231,7 @@ def main():
     last_run = get_last_run_info()
     is_incremental = False
     data_corte = None
+    use_cache = False
     
     if args.full:
         print("\n⚡ MODO: Carga COMPLETA (--full)")
@@ -211,6 +239,7 @@ def main():
         print(f"\n⚡ MODO: Últimos {args.days} dias (--days)")
     elif last_run and os.path.exists(CSV_PATH):
         is_incremental = True
+        use_cache = True
         last_run_time = datetime.fromisoformat(last_run['timestamp'])
         data_corte = last_run_time - timedelta(hours=SAFETY_WINDOW_HOURS)
         print(f"\n⚡ MODO: INCREMENTAL")
@@ -290,33 +319,53 @@ def main():
     print(f"   📊 Total de saídas: {df_consolidado['QTD_SAIDA'].sum():,.0f} unidades")
     
     # ============================================================================
-    # 4. LER PRODUTOS E ENRIQUECER
+    # 4. LER PRODUTOS E ENRIQUECER (com cache em modo incremental)
     # ============================================================================
-    try:
-        df_produtos = ler_tabela("""
-            SELECT 
-                REFERENCIA, PRECO_CUST, PRECO_VEND, UNIDADE,
-                MARCA, SEGMENTO, GRUPO, SUB_GRUPO
-            FROM PRODUTOS
-        """, "PRODUTOS")
-    except:
-        df_produtos = None
-        print("   ⚠️ PRODUTOS não disponível")
+    df_produtos = None
+    df_grupos = None
+    df_marcas = None
+    df_subgrupo = None
     
-    try:
-        df_grupos = ler_tabela("SELECT CODIGO, NOME_GRUPO FROM GRUPOS", "GRUPOS")
-    except:
-        df_grupos = None
+    if use_cache:
+        # Tentar carregar do cache
+        df_produtos = load_cache(CACHE_PRODUTOS, "PRODUTOS")
+        df_grupos = load_cache(CACHE_GRUPOS, "GRUPOS")
+        df_marcas = load_cache(CACHE_MARCAS, "MARCAS")
+        df_subgrupo = load_cache(CACHE_SUBGRUPO, "SUBGRUPO")
     
-    try:
-        df_marcas = ler_tabela("SELECT CODIGO, NOME_MARCA FROM MARCAS", "MARCAS")
-    except:
-        df_marcas = None
+    # Se não tem cache ou é carga completa, buscar do banco
+    if df_produtos is None:
+        try:
+            df_produtos = ler_tabela("""
+                SELECT 
+                    REFERENCIA, PRECO_CUST, PRECO_VEND, UNIDADE,
+                    MARCA, SEGMENTO, GRUPO, SUB_GRUPO
+                FROM PRODUTOS
+            """, "PRODUTOS")
+            save_cache(df_produtos, CACHE_PRODUTOS)
+        except:
+            print("   ⚠️ PRODUTOS não disponível")
     
-    try:
-        df_subgrupo = ler_tabela("SELECT CODIGO, DESCRICAO FROM PRODUTOS_SUB_GRUPO", "PRODUTOS_SUB_GRUPO")
-    except:
-        df_subgrupo = None
+    if df_grupos is None:
+        try:
+            df_grupos = ler_tabela("SELECT CODIGO, NOME_GRUPO FROM GRUPOS", "GRUPOS")
+            save_cache(df_grupos, CACHE_GRUPOS)
+        except:
+            pass
+    
+    if df_marcas is None:
+        try:
+            df_marcas = ler_tabela("SELECT CODIGO, NOME_MARCA FROM MARCAS", "MARCAS")
+            save_cache(df_marcas, CACHE_MARCAS)
+        except:
+            pass
+    
+    if df_subgrupo is None:
+        try:
+            df_subgrupo = ler_tabela("SELECT CODIGO, DESCRICAO FROM PRODUTOS_SUB_GRUPO", "PRODUTOS_SUB_GRUPO")
+            save_cache(df_subgrupo, CACHE_SUBGRUPO)
+        except:
+            pass
     
     if df_produtos is not None:
         print(f"\n🔗 Enriquecendo com dados de produto...")
