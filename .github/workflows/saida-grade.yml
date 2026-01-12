@@ -77,6 +77,10 @@ jobs:
           path: |
             output/SAIDA_GRADE.csv
             output/.saida_grade_last_run.json
+            output/.cache_produtos.json
+            output/.cache_grupos.json
+            output/.cache_marcas.json
+            output/.cache_subgrupo.json
           key: saida-grade-data-${{ github.run_id }}
           restore-keys: |
             saida-grade-data-
@@ -143,6 +147,10 @@ jobs:
           path: |
             output/SAIDA_GRADE.csv
             output/.saida_grade_last_run.json
+            output/.cache_produtos.json
+            output/.cache_grupos.json
+            output/.cache_marcas.json
+            output/.cache_subgrupo.json
           key: saida-grade-data-${{ github.run_id }}
       
       # ================================================================
