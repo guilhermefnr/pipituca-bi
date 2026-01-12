@@ -1,37 +1,61 @@
-name: Saida Grade Daily Update
+name: Saida Grade Hourly Update
 
 on:
-  workflow_dispatch:  # Permite execução manual
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Modo de execução'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto        # Automático (incremental se possível)
+          - full        # Força carga completa
+          - days-7      # Últimos 7 dias
+          - days-30     # Últimos 30 dias
+  
   schedule:
-    # 15h30 BRT (GMT-3) = 18:30 UTC
-    - cron: '30 18 * * *'
-    # 21h30 BRT (GMT-3) = 00:30 UTC
-    - cron: '30 0 * * *'
+    # 12x ao dia: 9h às 21h BRT (12h às 00h UTC)
+    # Minuto 15 para evitar congestionamento
+    - cron: '15 12 * * *'   # 09:15 BRT
+    - cron: '15 13 * * *'   # 10:15 BRT
+    - cron: '15 14 * * *'   # 11:15 BRT
+    - cron: '15 15 * * *'   # 12:15 BRT
+    - cron: '15 16 * * *'   # 13:15 BRT
+    - cron: '15 17 * * *'   # 14:15 BRT
+    - cron: '15 18 * * *'   # 15:15 BRT
+    - cron: '15 19 * * *'   # 16:15 BRT
+    - cron: '15 20 * * *'   # 17:15 BRT
+    - cron: '15 21 * * *'   # 18:15 BRT
+    - cron: '15 22 * * *'   # 19:15 BRT
+    - cron: '15 23 * * *'   # 20:15 BRT
+    - cron: '15 0 * * *'    # 21:15 BRT
 
 concurrency:
   group: saida-grade
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build-and-upload:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 30
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
+      
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
+          cache: 'pip'
+      
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # Biblioteca para Google Sheets API
           pip install packaging google-api-python-client google-auth-httplib2 google-auth-oauthlib
-
+      
       - name: Create .env for database connection
         run: |
           cat > .env <<'ENV'
@@ -42,32 +66,123 @@ jobs:
           FB_PASS=${{ secrets.SYNDATA_PASSWORD }}
           FB_CHARSET=${{ secrets.SYNDATA_CHARSET }}
           ENV
-
-      - name: Show .env (masked)
+      
+      # ================================================================
+      # CACHE: Restaurar dados da última execução
+      # ================================================================
+      - name: Restore cache
+        uses: actions/cache@v4
+        id: cache-restore
+        with:
+          path: |
+            output/SAIDA_GRADE.csv
+            output/.saida_grade_last_run.json
+          key: saida-grade-data-${{ github.run_id }}
+          restore-keys: |
+            saida-grade-data-
+      
+      - name: Check cache status
         run: |
-          echo "==== .env (mascarado pelo GitHub) ===="
-          cat .env
-
+          echo "📂 Status do cache:"
+          mkdir -p output
+          if [ -f "output/SAIDA_GRADE.csv" ]; then
+            echo "   ✅ CSV encontrado: $(wc -l < output/SAIDA_GRADE.csv) linhas"
+          else
+            echo "   ⚠️ CSV não encontrado (primeira execução)"
+          fi
+          
+          if [ -f "output/.saida_grade_last_run.json" ]; then
+            echo "   ✅ Última execução:"
+            cat output/.saida_grade_last_run.json
+          fi
+      
+      # ================================================================
+      # EXECUÇÃO
+      # ================================================================
+      - name: Determine execution mode
+        id: mode
+        run: |
+          MODE="${{ github.event.inputs.mode || 'auto' }}"
+          echo "mode=$MODE" >> $GITHUB_OUTPUT
+          echo "📋 Modo: $MODE"
+      
       - name: Run saida_grade.py
         run: |
-          mkdir -p output
-          python saida_grade.py
-          echo "=== Arquivo gerado ==="
+          MODE="${{ steps.mode.outputs.mode }}"
+          
+          case $MODE in
+            full)
+              echo "🔄 Carga COMPLETA..."
+              python saida_grade.py --full
+              ;;
+            days-7)
+              echo "🔄 Últimos 7 dias..."
+              python saida_grade.py --days 7
+              ;;
+            days-30)
+              echo "🔄 Últimos 30 dias..."
+              python saida_grade.py --days 30
+              ;;
+            *)
+              echo "🔄 Modo AUTOMÁTICO..."
+              python saida_grade.py
+              ;;
+          esac
+          
+          echo "=== Resultado ==="
           ls -lh output/SAIDA_GRADE.csv
-
-      - name: Write Google Service Account credentials
-        run: |
-          echo '${{ secrets.GDRIVE_SA_JSON }}' > google_sa.json
-
+          echo "Linhas: $(wc -l < output/SAIDA_GRADE.csv)"
+      
+      # ================================================================
+      # CACHE: Salvar para próxima execução
+      # ================================================================
+      - name: Save cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            output/SAIDA_GRADE.csv
+            output/.saida_grade_last_run.json
+          key: saida-grade-data-${{ github.run_id }}
+      
+      # ================================================================
+      # UPLOAD
+      # ================================================================
+      - name: Write Google credentials
+        run: echo '${{ secrets.GDRIVE_SA_JSON }}' > google_sa.json
+      
       - name: Upload to Google Sheets
         env:
           GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/google_sa.json
           SHEET_ID: ${{ secrets.DRIVE_FILE_ID_SAIDA_GRADE }}
         run: |
+          echo "📤 Enviando para Google Sheets..."
           python upload_to_sheets.py
-
+          echo "✅ Upload concluído!"
+      
+      # ================================================================
+      # CLEANUP
+      # ================================================================
       - name: Cleanup
+        if: always()
+        run: rm -f google_sa.json .env
+      
+      - name: Summary
+        if: always()
         run: |
-          echo "🧹 Limpando arquivos temporários..."
-          rm -f google_sa.json
-          echo "✅ Concluído!"
+          echo "## 📊 Saída Grade - Execução" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Modo | ${{ steps.mode.outputs.mode }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Horário | $(date -u '+%Y-%m-%d %H:%M UTC') |" >> $GITHUB_STEP_SUMMARY
+          if [ -f "output/SAIDA_GRADE.csv" ]; then
+            echo "| Linhas | $(wc -l < output/SAIDA_GRADE.csv) |" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -f "output/.saida_grade_last_run.json" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Detalhes" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat output/.saida_grade_last_run.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
