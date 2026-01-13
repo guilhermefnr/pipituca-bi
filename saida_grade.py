@@ -11,7 +11,7 @@ MODO INCREMENTAL:
 - Cacheia tabelas auxiliares (PRODUTOS, GRUPOS, MARCAS, SUBGRUPO)
 
 IMPORTANTE:
-- Filtra movimentações do HISTORICO que contenham "VENDA" ou "RETIRADA"
+- Filtra movimentações do HISTORICO que contenham "VENDA PDV" ou "RETIRADA" (exceto canceladas)
 - Agrupa por: COD_GRADE + DATA_MOVIMENTO + NOME_USUARIO
 - Calcula: QTD_SAIDA (soma de todas as saídas do grupo)
 """
@@ -145,7 +145,8 @@ def build_kardex_query(data_corte=None, dias=None):
             QTDE_SAIDA, TIPO,
             COD_GRADE_COR, COD_GRADE_TAMANHO,
             HISTORICO, NOME_USUARIO,
-            DATA_MOVIMENTO, HORA_MOVIMENTO
+            DATA_MOVIMENTO, HORA_MOVIMENTO,
+            NUMERO_PEDIDO
         FROM KARDEX
     """
     
@@ -278,12 +279,33 @@ def main():
         print(f"   🔧 Corrigidas {grades_vazias_antes:,} grades vazias")
     
     # ============================================================================
-    # 2. FILTRAR SAÍDAS (VENDAS E RETIRADAS)
+    # 2. FILTRAR SAÍDAS (VENDAS PDV + RETIRADAS EFETIVAS)
     # ============================================================================
-    print(f"\n🔍 Filtrando SAÍDAS (VENDAS e RETIRADAS) do kardex...")
+    print(f"\n🔍 Filtrando SAÍDAS (VENDA PDV + RETIRADA efetivas)...")
     
+    # Converter HISTORICO para string e uppercase para comparações
+    df_kardex['HISTORICO'] = df_kardex['HISTORICO'].astype(str).str.upper()
+    
+    # Identificar pedidos que foram cancelados (para excluir suas retiradas)
+    pedidos_cancelados = df_kardex[
+        df_kardex['HISTORICO'].str.contains('CANCELAMENTO', na=False)
+    ]['NUMERO_PEDIDO'].unique()
+    
+    if len(pedidos_cancelados) > 0:
+        print(f"   ℹ️ Pedidos cancelados identificados: {len(pedidos_cancelados)}")
+    
+    # Filtrar saídas efetivas:
+    # 1. VENDA PDV (vendas finalizadas no balcão)
+    # 2. RETIRADA (exceto CANC. RETIRADA e pedidos cancelados)
     df_saidas = df_kardex[
-        df_kardex['HISTORICO'].astype(str).str.upper().str.contains('VENDA|RETIRADA', na=False)
+        # Vendas PDV (balcão) - sempre incluir
+        (df_kardex['HISTORICO'].str.contains('VENDA PDV', na=False)) |
+        # Retiradas (crediário) - apenas se não canceladas
+        (
+            (df_kardex['HISTORICO'].str.contains('RETIRADA', na=False)) &
+            (~df_kardex['HISTORICO'].str.contains('CANC', na=False)) &
+            (~df_kardex['NUMERO_PEDIDO'].isin(pedidos_cancelados))
+        )
     ].copy()
     
     print(f"   ✅ {len(df_saidas):,} movimentações de saída encontradas")
