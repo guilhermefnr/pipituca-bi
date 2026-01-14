@@ -288,8 +288,9 @@ def main():
     df_kardex['HISTORICO'] = df_kardex['HISTORICO'].astype(str).str.upper()
     
     # Identificar pedidos que foram cancelados (para excluir suas retiradas/devoluções)
+    # Usa 'CANC' para pegar tanto 'CANCELAMENTO' quanto 'CANC. RETIRADA'
     pedidos_cancelados = df_kardex[
-        df_kardex['HISTORICO'].str.contains('CANCELAMENTO', na=False)
+        df_kardex['HISTORICO'].str.contains('CANC', na=False)
     ]['NUMERO_PEDIDO'].unique()
     
     if len(pedidos_cancelados) > 0:
