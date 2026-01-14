@@ -12,7 +12,8 @@ MODO INCREMENTAL:
 
 IMPORTANTE:
 - Filtra movimentações do HISTORICO que contenham "VENDA PDV" ou "RETIRADA" (exceto canceladas)
-- Agrupa por: COD_GRADE + DATA_MOVIMENTO + NOME_USUARIO
+- Filtra também DEVOLUÇÕES efetivas (para cálculo de custo líquido)
+- Agrupa por: COD_GRADE + DATA_MOVIMENTO + NOME_USUARIO + TIPO_MOV
 - Calcula: QTD_SAIDA (soma de todas as saídas do grupo)
 """
 import os
@@ -142,7 +143,7 @@ def build_kardex_query(data_corte=None, dias=None):
     base_query = """
         SELECT 
             LOJA, CODIGO_PRODUTO, COD_GRADE, DESCRICAO,
-            QTDE_SAIDA, TIPO,
+            QTDE_SAIDA, QTDE_ENTRADA, TIPO,
             COD_GRADE_COR, COD_GRADE_TAMANHO,
             HISTORICO, NOME_USUARIO,
             DATA_MOVIMENTO, HORA_MOVIMENTO,
@@ -169,7 +170,7 @@ def build_kardex_query(data_corte=None, dias=None):
 def merge_dataframes(df_existing, df_new):
     """
     Faz merge (upsert) dos dados novos com os existentes.
-    Chave: COD_GRADE + DATA_MOVIMENTO + NOME_USUARIO
+    Chave: COD_GRADE + DATA_MOVIMENTO + NOME_USUARIO + TIPO_MOV
     """
     if df_existing is None or len(df_existing) == 0:
         return df_new
@@ -181,7 +182,7 @@ def merge_dataframes(df_existing, df_new):
     print(f"   📂 Existentes: {len(df_existing):,} linhas")
     print(f"   🆕 Novos: {len(df_new):,} linhas")
     
-    key_cols = ['COD_GRADE', 'DATA_MOVIMENTO', 'NOME_USUARIO']
+    key_cols = ['COD_GRADE', 'DATA_MOVIMENTO', 'NOME_USUARIO', 'TIPO_MOV']
     
     # Garantir que ambos têm as mesmas colunas
     all_cols = list(set(df_existing.columns) | set(df_new.columns))
@@ -279,14 +280,14 @@ def main():
         print(f"   🔧 Corrigidas {grades_vazias_antes:,} grades vazias")
     
     # ============================================================================
-    # 2. FILTRAR SAÍDAS (VENDAS PDV + RETIRADAS EFETIVAS)
+    # 2. FILTRAR SAÍDAS (VENDAS PDV + RETIRADAS EFETIVAS) E DEVOLUÇÕES
     # ============================================================================
-    print(f"\n🔍 Filtrando SAÍDAS (VENDA PDV + RETIRADA efetivas)...")
+    print(f"\n🔍 Filtrando SAÍDAS (VENDA PDV + RETIRADA efetivas) e DEVOLUÇÕES...")
     
     # Converter HISTORICO para string e uppercase para comparações
     df_kardex['HISTORICO'] = df_kardex['HISTORICO'].astype(str).str.upper()
     
-    # Identificar pedidos que foram cancelados (para excluir suas retiradas)
+    # Identificar pedidos que foram cancelados (para excluir suas retiradas/devoluções)
     pedidos_cancelados = df_kardex[
         df_kardex['HISTORICO'].str.contains('CANCELAMENTO', na=False)
     ]['NUMERO_PEDIDO'].unique()
@@ -294,10 +295,8 @@ def main():
     if len(pedidos_cancelados) > 0:
         print(f"   ℹ️ Pedidos cancelados identificados: {len(pedidos_cancelados)}")
     
-    # Filtrar saídas efetivas:
-    # 1. VENDA PDV (vendas finalizadas no balcão)
-    # 2. RETIRADA (exceto CANC. RETIRADA e pedidos cancelados)
-    df_saidas = df_kardex[
+    # --- VENDAS: VENDA PDV + RETIRADA efetivas ---
+    df_vendas = df_kardex[
         # Vendas PDV (balcão) - sempre incluir
         (df_kardex['HISTORICO'].str.contains('VENDA PDV', na=False)) |
         # Retiradas (crediário) - apenas se não canceladas
@@ -307,8 +306,26 @@ def main():
             (~df_kardex['NUMERO_PEDIDO'].isin(pedidos_cancelados))
         )
     ].copy()
+    df_vendas['TIPO_MOV'] = 'VENDA'
+    df_vendas['QTD_MOV'] = df_vendas['QTDE_SAIDA']
     
-    print(f"   ✅ {len(df_saidas):,} movimentações de saída encontradas")
+    print(f"   ✅ {len(df_vendas):,} movimentações de VENDA encontradas")
+    
+    # --- DEVOLUÇÕES: efetivas (não canceladas) ---
+    df_devolucoes = df_kardex[
+        (df_kardex['HISTORICO'].str.contains('DEVOLUÇÃO', na=False)) &
+        (~df_kardex['HISTORICO'].str.contains('CANC', na=False)) &
+        (~df_kardex['NUMERO_PEDIDO'].isin(pedidos_cancelados))
+    ].copy()
+    df_devolucoes['TIPO_MOV'] = 'DEVOLUCAO'
+    df_devolucoes['QTD_MOV'] = df_devolucoes['QTDE_ENTRADA']
+    
+    print(f"   ✅ {len(df_devolucoes):,} movimentações de DEVOLUÇÃO encontradas")
+    
+    # --- CONCATENAR VENDAS + DEVOLUÇÕES ---
+    df_saidas = pd.concat([df_vendas, df_devolucoes], ignore_index=True)
+    
+    print(f"   ✅ {len(df_saidas):,} movimentações totais")
     
     if len(df_saidas) == 0:
         print("\n⚠️ Nenhuma saída encontrada no período")
@@ -321,24 +338,24 @@ def main():
         return
     
     # ============================================================================
-    # 3. AGRUPAR POR GRADE + DATA + USUARIO
+    # 3. AGRUPAR POR GRADE + DATA + USUARIO + TIPO_MOV
     # ============================================================================
-    print(f"\n📦 Agrupando por COD_GRADE + DATA_MOVIMENTO + NOME_USUARIO...")
+    print(f"\n📦 Agrupando por COD_GRADE + DATA_MOVIMENTO + NOME_USUARIO + TIPO_MOV...")
     
-    df_consolidado = df_saidas.groupby(['COD_GRADE', 'DATA_MOVIMENTO', 'NOME_USUARIO']).agg({
+    df_consolidado = df_saidas.groupby(['COD_GRADE', 'DATA_MOVIMENTO', 'NOME_USUARIO', 'TIPO_MOV']).agg({
         'LOJA': 'first',
         'CODIGO_PRODUTO': 'first',
         'DESCRICAO': 'first',
-        'QTDE_SAIDA': 'sum',
+        'QTD_MOV': 'sum',
         'COD_GRADE_COR': 'first',
         'COD_GRADE_TAMANHO': 'first',
         'HORA_MOVIMENTO': 'first'
     }).reset_index()
     
-    df_consolidado = df_consolidado.rename(columns={'QTDE_SAIDA': 'QTD_SAIDA'})
+    df_consolidado = df_consolidado.rename(columns={'QTD_MOV': 'QTD_SAIDA'})
     
-    print(f"   ✅ {len(df_consolidado):,} linhas (grade/data/usuário)")
-    print(f"   📊 Total de saídas: {df_consolidado['QTD_SAIDA'].sum():,.0f} unidades")
+    print(f"   ✅ {len(df_consolidado):,} linhas (grade/data/usuário/tipo)")
+    print(f"   📊 Total de movimentações: {df_consolidado['QTD_SAIDA'].sum():,.0f} unidades")
     
     # ============================================================================
     # 4. LER PRODUTOS E ENRIQUECER (com cache em modo incremental)
@@ -486,7 +503,8 @@ def main():
         'FATURAMENTO': 'FATURAMENTO',
         'CUSTO_TOTAL': 'CUSTO_TOTAL',
         'LUCRO_BRUTO': 'LUCRO_BRUTO',
-        'MARGEM_BRUTA': 'MARGEM_BRUTA'
+        'MARGEM_BRUTA': 'MARGEM_BRUTA',
+        'TIPO_MOV': 'TIPO_MOV'
     }
     
     colunas_existentes = [col for col in colunas_finais.keys() if col in df_consolidado.columns]
@@ -509,8 +527,11 @@ def main():
     print(f"   • Grades únicas: {df_final['COD_GRADE'].nunique():,}")
     print(f"   • Datas únicas: {df_final['DATA_MOVIMENTO'].nunique():,}")
     print(f"   • Usuários únicos: {df_final['NOME_USUARIO'].nunique():,}")
-    print(f"   • Total de saídas: {df_final['QTD_SAIDA'].sum():,.0f} unidades")
+    print(f"   • Total de movimentações: {df_final['QTD_SAIDA'].sum():,.0f} unidades")
     print(f"   • Colunas: {len(df_final.columns)}")
+    if 'TIPO_MOV' in df_final.columns:
+        print(f"   • Vendas: {len(df_final[df_final['TIPO_MOV'] == 'VENDA']):,} linhas")
+        print(f"   • Devoluções: {len(df_final[df_final['TIPO_MOV'] == 'DEVOLUCAO']):,} linhas")
  
     # Forçar TAMANHO como texto (resolve P, M, G)
     if 'TAMANHO' in df_final.columns:
